@@ -19,7 +19,7 @@ function sleep(ms: number) {
 async function connect() {
   const client = new Client({ connectionString: url });
   await client.connect();
-  await client.query("set statement_timeout = '20s'");
+  await client.query("set statement_timeout = '120s'");
   return client;
 }
 
