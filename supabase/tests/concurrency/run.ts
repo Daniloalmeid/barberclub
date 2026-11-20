@@ -19,12 +19,38 @@ function sleep(ms: number) {
 async function connect() {
   const client = new Client({ connectionString: url });
   await client.connect();
-  await client.query("set statement_timeout = '120s'");
+  await client.query("set statement_timeout = '30s'");
   return client;
 }
 
 function pgCode(error: unknown): string {
   return typeof error === "object" && error && "code" in error ? String(error.code) : "";
+}
+
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+// A rejeição precisa de handler no mesmo instante. No CI ela chega enquanto
+// ainda esperamos o commit da outra sessão, e o Node encerra o processo.
+function observe<T>(promise: Promise<T>): Promise<Outcome<T>> {
+  return promise.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
+// O vencedor precisa commitar assim que a função retorna. O advisory lock
+// só sai no commit; esperar o perdedor antes disso estoura o statement_timeout.
+function finish<T>(client: Client, promise: Promise<T>): Promise<Outcome<T>> {
+  return promise.then(
+    async (value) => {
+      await client.query("commit");
+      return { ok: true, value };
+    },
+    async (error: unknown) => {
+      await client.query("rollback").catch(() => undefined);
+      return { ok: false, error };
+    },
+  );
 }
 
 async function waitUntil(label: string, probe: () => Promise<boolean>) {
@@ -202,18 +228,15 @@ async function c01(ids: Ids, round: number) {
   try {
     const pidB = await sessionPid(b);
     await book(a, ids, 0, 0, slot(1000 + round, 10), `c01-a-${round}`);
-    const pending = book(b, ids, 1, 0, slot(1000 + round, 10), `c01-b-${round}`);
+    const pending = observe(book(b, ids, 1, 0, slot(1000 + round, 10), `c01-b-${round}`));
     await waitUntil("C01 B bloqueada", async () => (await blockedSessions(watch, [pidB])) === 1);
     await a.query("commit");
-    let failed = false;
-    try {
-      await pending;
-    } catch (error) {
-      failed = pgCode(error) === "23P01";
-      if (!failed) throw error;
-      await b.query("rollback");
+    const outcome = await pending;
+    if (outcome.ok || pgCode(outcome.error) !== "23P01") {
+      if (!outcome.ok) throw outcome.error;
+      throw new Error("C01 a segunda reserva não recebeu 23P01");
     }
-    if (!failed) throw new Error("C01 a segunda reserva não recebeu 23P01");
+    await b.query("rollback");
     const left = await watch.query(
       "select count(*)::int as n from public.staff_busy b join public.appointments a on a.id = b.appointment_id where a.tenant_id = $2 and a.idempotency_key = $1 and b.active",
       [`c01-a-${round}`, ids.tenant],
@@ -246,19 +269,15 @@ async function c02(ids: Ids, round: number, timeOffFirst: boolean) {
     if (timeOffFirst) await timeOff(holder);
     else await book(holder, ids, 0, 1, starts, key);
     const pid = await sessionPid(waiter);
-    const pending = timeOffFirst ? book(waiter, ids, 0, 1, starts, key) : timeOff(waiter);
+    const pending = observe(timeOffFirst ? book(waiter, ids, 0, 1, starts, key) : timeOff(waiter));
     await waitUntil("C02 segundo bloqueado", async () => (await blockedSessions(watch, [pid])) === 1);
     await holder.query("commit");
-    let failed = false;
-    try {
-      await pending;
-      await waiter.query("commit");
-    } catch (error) {
-      failed = pgCode(error) === "23P01";
-      if (!failed) throw error;
-      await waiter.query("rollback");
+    const outcome = await pending;
+    if (outcome.ok || pgCode(outcome.error) !== "23P01") {
+      if (!outcome.ok) throw outcome.error;
+      throw new Error("C02 o segundo não recebeu 23P01");
     }
-    if (!failed) throw new Error("C02 o segundo não recebeu 23P01");
+    await waiter.query("rollback");
   } finally {
     await Promise.all([holder.end(), waiter.end(), watch.end()]);
   }
@@ -382,25 +401,21 @@ async function c05(ids: Ids, round: number) {
     const paymentPid = await sessionPid(payment);
     await barrier.query("begin");
     await barrier.query("select pg_advisory_xact_lock(hashtextextended('staff:' || $1 || ':' || $2, 0))", [ids.tenant, ids.staff[3]]);
-    const bookCall = book(booking, ids, 1, 3, starts, `c05-book-${round}`);
+    const bookCall = finish(booking, book(booking, ids, 1, 3, starts, `c05-book-${round}`));
     await payment.query("begin");
     await payment.query("set local role service_role");
-    const payCall = payment.query("select server_api.process_payment_event('asaas', $1, $2, 'paid', 5000)", [
-      `c05-${round}-${Math.random().toString(16).slice(2)}`,
-      late.payment,
-    ]);
+    const payCall = finish(
+      payment,
+      payment.query("select server_api.process_payment_event('asaas', $1, $2, 'paid', 5000)", [
+        `c05-${round}-${Math.random().toString(16).slice(2)}`,
+        late.payment,
+      ]),
+    );
     await waitUntil("C05 os dois bloqueados", async () => (await blockedSessions(watch, [bookingPid, paymentPid])) >= 1);
     await sleep(80);
     await barrier.query("commit");
-    const results = await Promise.allSettled([bookCall, payCall]);
-    for (const client of [booking, payment]) {
-      try {
-        await client.query("commit");
-      } catch {
-        await client.query("rollback");
-      }
-    }
-    const codes = results.map((item) => (item.status === "rejected" ? pgCode(item.reason) : "ok"));
+    const results = await Promise.all([bookCall, payCall]);
+    const codes = results.map((item) => (item.ok ? "ok" : pgCode(item.error)));
     const state = await watch.query<{ appt: string; pay: string; busy: number }>(
       `select a.status as appt, p.status as pay,
               (select count(*)::int from public.staff_busy b where b.staff_id = $2 and b.active and b.period && tstzrange($3::timestamptz, $3::timestamptz + interval '30 minutes')) as busy
@@ -545,28 +560,26 @@ async function c08(ids: Ids, round: number) {
         row.payment,
       ]);
     };
-    const first = cancelFirst ? startCancel() : startPay();
+    const first = observe(cancelFirst ? startCancel() : startPay());
     await waitUntil("C08 primeiro", async () => (await blockedSessions(watch, [cancelFirst ? cancelPid : paymentPid])) === 1);
-    const second = cancelFirst ? startPay() : startCancel();
+    const second = observe(cancelFirst ? startPay() : startCancel());
     await waitUntil("C08 segundo", async () => (await blockedSessions(watch, [cancelPid, paymentPid])) === 2);
     await barrier.query("commit");
     const winner = cancelFirst ? cancel : payment;
     const loser = cancelFirst ? payment : cancel;
-    try {
-      await first;
-      await winner.query("commit");
-    } catch (error) {
-      if (pgCode(error) === "40P01") throw new Error("C08 deadlock");
-      throw error;
+    const winnerOutcome = await first;
+    if (!winnerOutcome.ok) {
+      if (pgCode(winnerOutcome.error) === "40P01") throw new Error("C08 deadlock");
+      throw winnerOutcome.error;
     }
-    try {
-      await second;
-      await loser.query("commit");
-    } catch (error) {
-      if (pgCode(error) === "40P01") throw new Error("C08 deadlock");
+    await winner.query("commit");
+    const loserOutcome = await second;
+    if (!loserOutcome.ok) {
+      if (pgCode(loserOutcome.error) === "40P01") throw new Error("C08 deadlock");
       await loser.query("rollback");
-      throw error;
+      throw loserOutcome.error;
     }
+    await loser.query("commit");
     const state = await watch.query<{ appt: string; pay: string; refunds: number }>(
       `select a.status as appt, p.status as pay,
               (select count(*)::int from public.refund_requests r where r.payment_id = p.id) as refunds
