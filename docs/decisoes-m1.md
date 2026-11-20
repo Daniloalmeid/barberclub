@@ -1,0 +1,41 @@
+# Decisões da M1
+
+Quando a especificação 1.6 deixava duas leituras possíveis, ficou a opção mais fechada. Isto é o registro.
+
+## D37
+
+O backup diário roda no cron da VPS, opção A. O papel é o `backup_reader`. Não há workflow de backup no GitHub Actions e o script canônico continua em `/opt/workloop/barberclub/scripts/backup-daily.sh`.
+
+No Supabase local o `postgres` da migration não é superusuário, mas conseguiu `ALTER ROLE backup_reader BYPASSRLS`. O papel fica `LOGIN`, sem `SUPERUSER`, `CREATEDB` ou `CREATEROLE`, com `BYPASSRLS`. `TEMP` e `CREATE` no banco foram revogados. A leitura nova nasce por `ALTER DEFAULT PRIVILEGES` do `postgres` e do `ledger_owner`.
+
+`USAGE` em `auth` e as policies de `storage.objects` não cabem na migration: o `postgres` não tem `GRANT OPTION` no schema `auth` nem é dono de `storage.objects`. O complemento idempotente está em `supabase/admin/superuser.sql` e o CI aplica com `psql -U supabase_admin` dentro do container, onde a conexão local é `trust`. Sem isso o `backup_reader` tem `SELECT` nas tabelas e mesmo assim não entra no schema `auth`. Na nuvem, se o papel da migration continuar sem esse poder, o mesmo SQL roda como `supabase_admin` na criação do projeto. Não se usa o `postgres` no backup.
+
+## Middleware
+
+A M1 cria o middleware, então a rejeição de path entra agora, não fica só anotada para a M2. Na entrada, antes de resolver tenant, o app responde 400 para segmento codificado (`%2e`, `%2f`, `%5c`, `%00`, inclusive codificação dupla), dot-segment (`.`, `..`, `..;algo`) e `;` no segmento. A função pura cobre a forma crua. O parser de URL do `NextRequest` já resolve um `..` puro antes do middleware; o caso que sobrevive, e que o advisory aponta, é o `/..;x/`.
+
+## Testes de privilégio
+
+T17 e G09 olham só os schemas do BarberClub (`public`, `public_api`, `server_api`, `private`, `ledger`). Os schemas gerenciados do Supabase têm `SECURITY DEFINER` próprio; alterá-los quebraria Auth e Storage.
+
+G07: o `backup_reader` tem `USAGE` em `server_api` para o dump (D37) e não tem `EXECUTE`. `EXECUTE` continua só no `service_role`.
+
+G10: tabela nova do `postgres` nasce sem privilégio para `anon`, `authenticated` e `service_role`. O `backup_reader` recebe `SELECT` pelo default privilege. É o comportamento pedido na D37.
+
+O `backup_reader` não executa função `SECURITY DEFINER` dos nossos schemas. Funções do schema `auth` continuam executáveis por `PUBLIC` porque revogar isso quebra o Auth. Não há `GRANT` direto para o `backup_reader`.
+
+## Ledger e agenda
+
+A ordem de row lock escrita na seção 5.3.1 vale: `appointments`, depois `payments`, depois `staff_busy`, depois `refund_requests`. O advisory do profissional vem antes de qualquer row lock. O `INSERT` em `webhook_events` continua antes do advisory, e por isso **não tem FK para `payments`**: a checagem da FK trava a linha do pagamento e o C08 volta a dar deadlock.
+
+Os triggers de soma zero do ledger e os de coerência do `staff_busy` são `SECURITY DEFINER`. No `COMMIT`, o Postgres os executa com o usuário da sessão. Sem isso, `service_role` e `authenticated` não leem o ledger nem o `staff_busy` e o commit falha mesmo quando a função dona escreveu certo.
+
+`book_appointment` trata `unique_violation` da chave de idempotência e devolve a reserva existente quando o hash coincide. Duas sessões do mesmo cliente não ficam as duas com erro.
+
+O catálogo público só devolve tenant `trial` ou `active`. `past_due` e `suspended` não aparecem e a reserva nova é recusada (`tenant_not_bookable`). Reserva já paga não é apagada.
+
+Pagamento no local é o padrão (`pay_at_location`, PIX desligado). O papel `manager` existe nas policies; a tela de convite fica para a M7.
+
+## Fora desta etapa
+
+Não há imagem no GHCR, projeto Supabase na nuvem, DNS, Traefik, token ou dado fictício fora das fixtures de teste. O digest da imagem Node fica para o build que for publicado. O Dockerfile está no repositório como alvo de handoff, sem ser construído no CI.

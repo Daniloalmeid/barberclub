@@ -1,0 +1,39 @@
+version: 1
+protocol: |
+  Cada tarefa declara os caminhos que vai tocar.
+  Quem não é o dono da trava não edita esses caminhos.
+  O Hermes não toca em caminho travado pelo Grok e vice-versa.
+  Os quatro artefatos canônicos da VPS não entram neste repositório.
+  Mudança neles só por patch sobre o arquivo existente, aplicado pelo Hermes.
+
+tasks:
+  - id: m1-fundacao
+    owner: grok
+    milestone: M1
+    paths:
+      - apps/**
+      - packages/**
+      - supabase/**
+      - .github/**
+      - ops/locks.yml
+      - docs/**
+      - infra/**
+      - scripts/**
+      - package.json
+      - pnpm-workspace.yaml
+      - pnpm-lock.yaml
+      - turbo.json
+      - tsconfig.base.json
+      - Dockerfile
+      - .gitignore
+      - README.md
+
+vps_canonical:
+  - path: /opt/workloop/barberclub/scripts/backup-daily.sh
+    role: backup diário oficial
+  - path: /opt/workloop/barberclub/scripts/traefik-drift-check.sh
+    role: detector de deriva oficial
+  - path: /opt/workloop/barberclub/runbooks/traefik-window.md
+    role: runbook oficial da janela do Traefik
+  - path: /opt/workloop/barberclub/env/backup.env.example
+    role: modelo oficial das variáveis do backup, sem segredos
