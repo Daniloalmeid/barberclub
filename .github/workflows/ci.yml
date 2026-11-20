@@ -9,11 +9,11 @@ jobs:
   app:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.33.4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -27,7 +27,7 @@ jobs:
   db:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Instalar Supabase CLI 3.2.0
         run: |
           curl -fsSL -o /tmp/supabase.tar.gz https://github.com/supabase/cli/releases/download/v3.2.0/supabase_linux_amd64.tar.gz
@@ -39,10 +39,10 @@ jobs:
         run: bash scripts/apply-superuser-grants.sh
       - name: pgTAP T01–T26 e G01–G13
         run: supabase test db supabase/tests/pgtap
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.33.4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
