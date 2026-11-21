@@ -1,4 +1,4 @@
-import { createCipheriv, createHmac, randomBytes } from "node:crypto";
+import { createCipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
 
@@ -131,14 +131,27 @@ function totp(secret, at = Date.now()) {
 }
 
 async function createUser(email, password) {
-  const response = await fetch(`${api}/auth/v1/admin/users`, {
-    method: "POST",
-    headers: { apikey: service, authorization: `Bearer ${service}`, "content-type": "application/json" },
-    body: JSON.stringify({ email, password, email_confirm: true }),
-  });
-  if (!response.ok) throw new Error(`criar usuario ${response.status}`);
-  const body = await response.json();
-  return body.id;
+  const id = crypto.randomUUID();
+  const safeEmail = email.replaceAll("'", "''");
+  const safePassword = password.replaceAll("'", "''");
+  psql(`
+    insert into auth.users (
+      instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+      confirmation_token, recovery_token, email_change_token_new, email_change
+    ) values (
+      '00000000-0000-0000-0000-000000000000', '${id}', 'authenticated', 'authenticated',
+      '${safeEmail}', extensions.crypt('${safePassword}', extensions.gen_salt('bf')), now(),
+      '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, now(), now(),
+      '', '', '', ''
+    );
+    insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
+    values (
+      '${id}', '${id}', jsonb_build_object('sub', '${id}', 'email', '${safeEmail}'),
+      'email', now(), now(), now()
+    );
+  `);
+  return id;
 }
 
 async function enroll(email, password) {
