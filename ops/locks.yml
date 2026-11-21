@@ -51,6 +51,14 @@ tasks:
       - scripts/check-dump-counts.sh
       - .github/workflows/ci.yml
       - ops/locks.yml
+  - id: m2-convites
+    owner: grok
+    milestone: M2
+    paths:
+      - supabase/migrations/20261123100000_m2_invites.sql
+      - supabase/tests/pgtap/m2_suite.sql
+      - docs/decisoes-m2.md
+      - ops/locks.yml
 
 vps_canonical:
   - path: /opt/workloop/barberclub/scripts/backup-daily.sh
