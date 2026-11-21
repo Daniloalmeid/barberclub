@@ -86,9 +86,24 @@ function continueClean(request: NextRequest): NextResponse {
   return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
 }
 
-function continueSealed(request: NextRequest): NextResponse {
+const NOT_FOUND_HTML =
+  '<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="noindex"><title>Página não encontrada</title></head><body><main><p>Página não encontrada.</p></main></body></html>';
+
+function plain404(): NextResponse {
+  return withCommonHeaders(
+    new NextResponse(NOT_FOUND_HTML, {
+      status: 404,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      },
+    }),
+  );
+}
+
+function continueSealed(request: NextRequest, host: string): NextResponse {
   const headers = withoutClientMarks(request.headers);
-  if (isLocalHop(rawHost(request))) headers.set("x-bc-host", sealHost(request));
+  headers.set("x-bc-host", host);
   return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } })));
 }
 
@@ -104,29 +119,30 @@ function rawHost(request: NextRequest): string {
 }
 
 function normalizeHost(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  if (trimmed.startsWith("[")) return trimmed;
-  const colon = trimmed.lastIndexOf(":");
-  const name = colon === -1 ? trimmed : trimmed.slice(0, colon);
-  const port = colon === -1 ? "" : trimmed.slice(colon);
-  return `${name.endsWith(".") ? name.slice(0, -1) : name}${port}`;
+  let value = raw.trim().toLowerCase();
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    return end === -1 ? "" : value.slice(0, end + 1);
+  }
+  value = value.replace(/\s+/g, "");
+  value = value.replace(/:\d+$/, "");
+  if (value.endsWith(".")) value = value.slice(0, -1);
+  return value;
 }
 
 function isLocalHop(raw: string): boolean {
   const name = normalizeHost(raw).replace(/:\d+$/, "");
-  return name === "localhost" || name === "127.0.0.1" || name === "::1" || name === "0.0.0.0";
+  return name === "localhost" || name === "127.0.0.1";
 }
 
-function sealHost(request: NextRequest): string {
-  const real = normalizeHost(rawHost(request));
-  if (!isLocalHop(real)) return real;
-  return normalizeHost(request.headers.get("x-bc-host") ?? "") || real;
+function mintHost(request: NextRequest): string {
+  return normalizeHost(rawHost(request));
 }
 
 async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
   const headers = withoutClientMarks(request.headers);
-  const host = sealHost(request);
-  headers.set("x-bc-host", host);
+  const host = mintHost(request);
+  if (host && !isLocalHop(host)) headers.set("x-bc-host", host);
   headers.set("x-bc-seal", await routeSeal(url.pathname, host));
   return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
 }
@@ -216,12 +232,26 @@ export async function middleware(request: NextRequest) {
   const named = canonicalHost(host, cfg.rootDomain);
   if (needsSlash && named) return redirectCanonical(fixed, named);
 
+  if (process.env.BC_FORGERY_PROBE === "1" && pathname === "/__bc/probe") {
+    const mint = request.nextUrl.searchParams.get("path") ?? "";
+    const host = mintHost(request);
+    if (!mint.startsWith("/") || mint.includes("\\") || mint.includes("\n") || !host || isLocalHop(host)) return badPath();
+    return new NextResponse(null, {
+      status: 204,
+      headers: { "x-probe-seal": await routeSeal(mint, host), "x-probe-host": host, "cache-control": "no-store" },
+    });
+  }
+
   if (isPassthrough(path)) return continueClean(request);
   if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
-    const expected = await routeSeal(pathname, sealHost(request));
+    const real = mintHost(request);
+    if (!isLocalHop(real)) return neutral404(request);
+    const carried = normalizeHost(request.headers.get("x-bc-host") ?? "");
     const presented = request.headers.get("x-bc-seal") ?? "";
-    if (sealsEqual(presented, expected)) return continueSealed(request);
-    return neutral404(request);
+    if (!carried || isLocalHop(carried)) return plain404();
+    const expected = await routeSeal(pathname, carried);
+    if (!sealsEqual(presented, expected)) return plain404();
+    return continueSealed(request, carried);
   }
 
   switch (host.kind) {

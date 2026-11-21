@@ -126,6 +126,13 @@ describe("middleware de host", () => {
     expect((response.headers.get("x-middleware-request-x-bc-seal") ?? "").length).toBeGreaterThan(16);
     expect(response.headers.get("x-middleware-request-x-bc-route")).toBeNull();
   });
+  it("normaliza o Host real sem porta e ignora a variação do x-bc-host", async () => {
+    const request = new NextRequest(new URL("/robots.txt", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `Ativo.${root}:443`, "x-bc-host": ` TRIAL1.${root}:443 ` },
+    });
+    const response = await middleware(request);
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
+  });
   it("assina o selo com o Host real e não com o x-bc-host do cliente", async () => {
     const request = new NextRequest(new URL("/robots.txt", "http://slug.barber.workloop.com.br"), {
       headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },
