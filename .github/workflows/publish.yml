@@ -3,7 +3,8 @@
 # workflow_run: o push no main dispara o CI e, com conclusion success,
 # este workflow publica. workflow_dispatch no main só segue se a API
 # mostrar o CI daquele sha com success (actions: read, sem segredo extra).
-# No pull_request há build e smoke, sem login e sem push.
+# No pull_request há build e smoke, sem login, sem artefato e sem push.
+# O job push não reconstrói: carrega o tar do smoke e só publica se o Image ID bater.
 name: publish
 
 on:
@@ -35,7 +36,7 @@ jobs:
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
       publish: ${{ steps.meta.outputs.publish }}
-      built: ${{ steps.meta.outputs.built }}
+      image_id: ${{ steps.image.outputs.id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -90,37 +91,58 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - name: Smoke /api/health/live em até 30s
         run: bash scripts/smoke-image.sh barberclub:smoke "${{ steps.meta.outputs.sha }}"
+      - name: Guardar a imagem que passou no smoke
+        id: image
+        if: steps.meta.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          id="$(docker image inspect barberclub:smoke --format '{{.Id}}')"
+          case "$id" in
+            sha256:*) ;;
+            *) echo "image id inesperado: $id" >&2; exit 1 ;;
+          esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          docker save barberclub:smoke | gzip > image.tar.gz
+          test -s image.tar.gz
+      - uses: actions/upload-artifact@v7
+        if: steps.meta.outputs.publish == 'true'
+        with:
+          name: barberclub-image
+          path: image.tar.gz
+          retention-days: 1
 
   push:
     needs: smoke
     if: needs.smoke.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
-          ref: ${{ needs.smoke.outputs.sha }}
-      - uses: docker/setup-buildx-action@v4
+          name: barberclub-image
+          path: /tmp/barberclub-image
+      - name: Carrega a imagem do smoke e confere o Image ID
+        id: loaded
+        run: |
+          set -euo pipefail
+          gunzip -c /tmp/barberclub-image/image.tar.gz | docker load
+          loaded="$(docker image inspect barberclub:smoke --format '{{.Id}}')"
+          expected="${{ needs.smoke.outputs.image_id }}"
+          echo "loaded=$loaded"
+          echo "expected=$expected"
+          if [[ "$loaded" != "$expected" || -z "$expected" ]]; then
+            echo "Image ID divergiu; nada é publicado" >&2
+            exit 1
+          fi
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publica sha e latest
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: production
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ghcr.io/daniloalmeid/barberclub:${{ needs.smoke.outputs.sha }}
-            ghcr.io/daniloalmeid/barberclub:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            GIT_COMMIT=${{ needs.smoke.outputs.sha }}
-            BUILD_TIME=${{ needs.smoke.outputs.built }}
-          labels: |
-            org.opencontainers.image.revision=${{ needs.smoke.outputs.sha }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Publica o mesmo Image ID em sha e latest
+        run: |
+          set -euo pipefail
+          sha="${{ needs.smoke.outputs.sha }}"
+          docker tag barberclub:smoke "ghcr.io/daniloalmeid/barberclub:${sha}"
+          docker tag barberclub:smoke ghcr.io/daniloalmeid/barberclub:latest
+          docker push "ghcr.io/daniloalmeid/barberclub:${sha}"
+          docker push ghcr.io/daniloalmeid/barberclub:latest
