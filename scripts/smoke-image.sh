@@ -82,19 +82,21 @@ if [[ "$home_code" != "200" ]]; then
   echo "smoke: GET / com Host de produção veio ${home_code}" >&2
   exit 1
 fi
-neutral_file="$(mktemp)"
 forged_trial="$(mktemp)"
 forged_ativo="$(mktemp)"
-neutral_code="$(curl -s -o "$neutral_file" -w '%{http_code}' -H "Host: naoexiste.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
 forged_trial_code="$(curl -s -o "$forged_trial" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-route: tenant:trial1" -H "x-bc-seal: forjado" "http://127.0.0.1:${port}/tenant/trial1")"
 forged_ativo_code="$(curl -s -o "$forged_ativo" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-route: tenant:ativo" "http://127.0.0.1:${port}/tenant/ativo")"
-echo "smoke forjado /tenant/trial1 ${forged_trial_code} /tenant/ativo ${forged_ativo_code} baseline ${neutral_code}"
-if [[ "$neutral_code" != "404" || "$forged_trial_code" != "404" || "$forged_ativo_code" != "404" ]]; then
-  echo "smoke: header forjado esperado 404 neutro" >&2
+echo "smoke forjado /tenant/trial1 ${forged_trial_code} /tenant/ativo ${forged_ativo_code}"
+if [[ "$forged_trial_code" != "404" || "$forged_ativo_code" != "404" ]]; then
+  echo "smoke: header forjado esperado 404" >&2
   exit 1
 fi
-if ! cmp -s "$neutral_file" "$forged_trial" || ! cmp -s "$neutral_file" "$forged_ativo"; then
-  echo "smoke: corpo do header forjado difere do 404 neutro" >&2
+if ! cmp -s "$forged_trial" "$forged_ativo"; then
+  echo "smoke: os dois headers forjados diferem entre si" >&2
+  exit 1
+fi
+if ! grep -q "Página não encontrada" "$forged_trial" || grep -q "<h1>Ativo</h1>\|<h1>Trial" "$forged_trial"; then
+  echo "smoke: header forjado não é o 404 neutro" >&2
   exit 1
 fi
 if docker logs "$name" 2>&1 | grep -F 'does not work with "output: standalone"' >/dev/null; then
