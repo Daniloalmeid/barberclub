@@ -1,0 +1,27 @@
+{
+  "name": "barberclub",
+  "private": true,
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "build": "turbo run build",
+    "test:db": "bash scripts/run-pgtap.sh",
+    "test:concurrency": "tsx supabase/tests/concurrency/run.ts",
+    "check:locks": "node scripts/check-locks.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.4",
+    "pg": "^8.16.3",
+    "tsx": "^4.20.6",
+    "turbo": "^2.6.1",
+    "typescript": "^5.9.3"
+  }
+}
