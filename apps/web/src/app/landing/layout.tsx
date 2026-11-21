@@ -1,8 +1,8 @@
-import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { requestHost } from "@/server/request-host";
 
 export default async function LandingLayout({ children }: { children: React.ReactNode }) {
-  const header = (await headers()).get("x-bc-route");
-  if (header !== "landing") notFound();
+  const { host } = await requestHost();
+  if (host.kind !== "base") notFound();
   return children;
 }

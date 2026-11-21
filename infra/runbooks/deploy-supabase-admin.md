@@ -162,7 +162,7 @@ docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
   | scripts/count-dump-tables.sh 32 || exit 1
 ```
 
-As 32 tabelas são as 28 de `public` (as 25 da M1 mais `reserved_slugs`, `reserved_slug_prefixes` e `tenant_slug_history`), as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`) e `private.login_handoffs`. O diretório não é o corrente.
+As 32 tabelas são as 28 de `public` (as 25 da M1 mais `reserved_slugs`, `reserved_slug_prefixes` e `tenant_slug_history`), as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`) e `private.login_handoffs`. O diretório não é o corrente. O dump usa `--exclude-table-data=private.login_handoffs`: a definição entra, os tokens não. O `backup_reader` mantém `SELECT` na tabela porque o `pg_dump` trava todas as tabelas do schema, e sem esse privilégio o `LOCK` falha.
 
 Depois do passo 4, um segundo dump só das tabelas de `auth` que o grant libera:
 

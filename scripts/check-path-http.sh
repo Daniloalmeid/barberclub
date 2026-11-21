@@ -7,6 +7,7 @@ export APP_ENV="${APP_ENV:-production}"
 export ROOT_DOMAIN="${ROOT_DOMAIN:-barber.workloop.com.br}"
 export PUBLIC_SCHEME="${PUBLIC_SCHEME:-https}"
 export PUBLIC_PORT="${PUBLIC_PORT:-}"
+export BC_ROUTE_SECRET="${BC_ROUTE_SECRET:-0123456789abcdef0123456789abcdef}"
 cd "$root/apps/web"
 pnpm exec next start -p "$port" >/tmp/barberclub-next-start.log 2>&1 &
 pid=$!

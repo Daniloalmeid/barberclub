@@ -1,12 +1,14 @@
 # Decisões da implementação da M4
 
-O desenho aprovado está em `docs/m4-arquitetura.md`, copiado sem alteração.
+O desenho aprovado está em `docs/m4-arquitetura.md`, copiado sem alteração. O que segue é o que o código faz.
 
-- O `redirect()` do Next durante o render de uma página é 307. O anônimo em `/login/regularizar` recebe 303 pelo middleware, antes da página, com `Location: /login`.
-- A página de tenant ativo é um route handler para poder responder 503 quando o PostgREST falha. O 404 de slug inválido, reservado, inexistente e inativo continua no `app/not-found.tsx`.
-- `private.login_handoffs` fica sem policy e sem grant para `anon`, `authenticated` e `service_role`. O `backup_reader` mantém o `SELECT` do default privilege, porque o dump do schema `private` trava a tabela.
-- A troca de slug da M4 é `server_api.rename_tenant_slug`, só com `EXECUTE` para `service_role`. Não há tela em `admin.`, que segue 404.
-- O POST de `/login` contra o GoTrue e o TOTP não entram no HTTP cru. O HTTP cobre o GET anônimo, o 303 e o 404. A decisão de quantos tenants o usuário vê está em `resolveLogin`, e as funções estão no pgTAP.
-- As páginas da landing leem o header interno no layout, então não ficam `force-static`. O conteúdo não consulta o banco.
-- O 404 interno usa o segmento `/tenant/x`. O `-` do desenho não é roteado pelo Next. `x` tem um caractere, falha na forma do slug e não consulta o banco.
-- A migration do slug é um único `DO`. O `supabase start` não abre transação, e `LOCK TABLE` solto falha com `25P01`. O lock, a contagem e o `ALTER` continuam atômicos.
+- O GoTrue local precisa de `auth.mfa.totp` com `enroll_enabled` e `verify_enabled`. O `config.toml` liga os dois. Isso não mexe no Supabase Cloud.
+- O login no host base é `POST /login` com `signInWithPassword` do `@supabase/ssr`. Se a conta tem fator TOTP, a resposta é 200 com o desafio e a sessão fica em AAL1. O código válido sobe para AAL2 antes do handoff. `resolveLogin` usa `my_login_tenants` e `my_regularization_tenants` com o JWT do usuário: um tenant ativo gera o handoff, vários mostram a escolha, nenhum mostra a mensagem neutra, e só pendência manda para `/login/regularizar`.
+- O handoff grava `create_login_handoff` no servidor, apaga o cookie `sb-` do host base com `Max-Age=0` e responde 303 para `originOf` do slug. No tenant, `consume_login_handoff` usa o slug do Host. `setSession` grava cookie sem `Domain`, com `HttpOnly`, `Secure` e `SameSite=Lax`. A resposta confere `user_id` e, quando há fator, exige AAL2. `next_path` passa de novo por `safeNextPath`, inclusive `/\`.
+- Tenant inexistente ou suspenso em `/auth/handoff` responde 404 neutro. Código de outro slug, vencido ou repetido responde 303 para `https://ROOT/login`, com `Cache-Control: no-store` e `Referrer-Policy: no-referrer`.
+- `/login/regularizar` lê a RPC com o JWT do usuário e, se a conta tem fator, exige AAL2. Sem sessão, o middleware responde 303 para `/login`.
+- Pedido externo a `/landing` ou `/tenant` responde 404. O middleware apaga `x-bc-*` de entrada: o header some do conjunto enviado ao Next, e o que não está nesse conjunto é removido do request. O rewrite interno leva um HMAC de `BC_ROUTE_SECRET` sobre o pathname. Sem o selo válido o middleware não dá `next()`. A página e o handoff leem o slug do Host, não do path e não do header.
+- O 308 de barra final usa `originOf(cfg, host)` do host classificado. O `Location` absoluto é o host canônico. `//evil.com/` vira esse mesmo host em `/evil.com`, sem host externo.
+- `GET /api/cron/handoffs` não existe. `POST` com `CRON_SECRET` chama `server_api.purge_login_handoffs()`, que apaga linhas com `expires_at` anterior a um dia.
+- O dump do `backup_reader` usa `--exclude-table-data=private.login_handoffs`. A definição entra na contagem de 32 tabelas; os tokens não entram no arquivo. Tirar o `SELECT` da tabela faz o `pg_dump` falhar no `LOCK TABLE`, mesmo com `--exclude-table-data`. O papel mantém o `SELECT` por causa dessa trava. Quem quiser o conteúdo dos tokens não o encontra no dump.
+- A página do tenant é um route handler para responder 503 quando o PostgREST falha, e escapa `display_name` no HTML. O `redirect()` do Next no render continua 307; o anônimo em `/login/regularizar` recebe 303 do middleware. A migration do slug continua um único `DO`.

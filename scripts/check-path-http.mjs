@@ -2,6 +2,7 @@ import net from "node:net";
 
 const port = Number(process.argv[2] ?? process.env.PATH_HTTP_PORT ?? 3456);
 const hostHeader = "barber.workloop.com.br";
+const origin = `https://${hostHeader}`;
 
 function raw(path) {
   return new Promise((resolve, reject) => {
@@ -45,9 +46,9 @@ const cases = [
   { path: "/..;x/", status: 400, location: "" },
   { path: "/..;x", status: 400, location: "" },
   { path: "/a;b", status: 400, location: "" },
-  { path: "/foo/", status: 308, location: "/foo" },
-  { path: "/foo/?a=1", status: 308, location: "/foo?a=1" },
-  { path: "/api/health/", status: 308, location: "/api/health" },
+  { path: "/foo/", status: 308, location: `${origin}/foo` },
+  { path: "/foo/?a=1", status: 308, location: `${origin}/foo?a=1` },
+  { path: "/api/health/", status: 308, location: `${origin}/api/health` },
   { path: "/", status: 200, location: "" },
   { path: "//evil.com/", status: 308, location: "/evil.com/" },
   { path: "/foo/%2e%2e/bar", status: 404, location: "" },
@@ -65,7 +66,7 @@ for (const item of cases) {
   if (response.location !== item.location) {
     problems.push(`location ${response.location || "(vazio)"} esperado ${item.location || "(vazio)"}`);
   }
-  if (response.location.startsWith("//") || response.location.includes("://")) {
+  if (response.location.startsWith("//") || (response.location.includes("://") && !response.location.startsWith(`${origin}/`))) {
     problems.push(`location externo ${response.location}`);
   }
   assertNoLeak(item.path, response.body);

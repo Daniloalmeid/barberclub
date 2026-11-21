@@ -8,6 +8,8 @@ import {
   rawPathFromUrl,
   safeJoin,
 } from "@barberclub/core";
+import { routeSeal, sealsEqual } from "./server/route-seal";
+import { getTenantPublic, UpstreamError } from "./server/tenant-public";
 
 const BASE_ALLOW = new Set([
   "/",
@@ -20,35 +22,11 @@ const BASE_ALLOW = new Set([
 ]);
 
 function badPath() {
-  return NextResponse.json(
-    { error: "bad_path" },
-    { status: 400, headers: { "cache-control": "no-store" } },
-  );
+  return NextResponse.json({ error: "bad_path" }, { status: 400, headers: { "cache-control": "no-store" } });
 }
 
 function badHost() {
-  return NextResponse.json(
-    { error: "bad_host" },
-    { status: 400, headers: { "cache-control": "no-store" } },
-  );
-}
-
-function redirectSameOrigin(request: NextRequest, location: string | null) {
-  if (!location || !location.startsWith("/") || location.startsWith("//")) return badPath();
-  const origin = request.nextUrl.origin;
-  let target: URL;
-  try {
-    const base = new URL(origin);
-    if ((base.protocol !== "http:" && base.protocol !== "https:") || base.username || base.password) {
-      return badPath();
-    }
-    target = new URL(location, base);
-  } catch {
-    return badPath();
-  }
-  if (target.origin !== origin || target.username || target.password) return badPath();
-  if (`${target.pathname}${target.search}` !== location) return badPath();
-  return withCommonHeaders(NextResponse.redirect(target, 308));
+  return NextResponse.json({ error: "bad_host" }, { status: 400, headers: { "cache-control": "no-store" } });
 }
 
 function contentSecurityPolicy(): string {
@@ -75,19 +53,42 @@ function withCommonHeaders(response: NextResponse): NextResponse {
   return response;
 }
 
-function neutral404(request: NextRequest, path: string): NextResponse {
+async function neutral404(request: NextRequest): Promise<NextResponse> {
   const url = request.nextUrl.clone();
-  url.pathname = safeJoin("/tenant/x", path) ?? "/tenant/x";
+  url.pathname = "/__bc/404";
   url.search = "";
-  return rewrite(request, url, "tenant:x");
+  return rewrite(request, url);
 }
 
-function rewrite(request: NextRequest, url: URL, route: string): NextResponse {
-  const headers = new Headers(request.headers);
+function withoutClientMarks(source: Headers): Headers {
+  const headers = new Headers(source);
   for (const key of [...headers.keys()]) {
-    if (key.toLowerCase().startsWith("x-bc-")) headers.set(key, "");
+    if (key.toLowerCase().startsWith("x-bc-")) headers.delete(key);
   }
-  headers.set("x-bc-route", route);
+  return headers;
+}
+
+function redirectCanonical(location: string | null, hostName: string) {
+  if (!location || !location.startsWith("/") || location.startsWith("//")) return badPath();
+  const origin = originOf(loadConfig(), hostName);
+  let target: URL;
+  try {
+    target = new URL(location, `${origin}/`);
+  } catch {
+    return badPath();
+  }
+  if (target.origin !== origin || target.username || target.password) return badPath();
+  if (`${target.pathname}${target.search}` !== location) return badPath();
+  return withCommonHeaders(NextResponse.redirect(target, 308));
+}
+
+function continueClean(request: NextRequest): NextResponse {
+  return withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } }));
+}
+
+async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
+  const headers = withoutClientMarks(request.headers);
+  headers.set("x-bc-seal", await routeSeal(url.pathname));
   return withCommonHeaders(NextResponse.rewrite(url, { request: { headers } }));
 }
 
@@ -95,19 +96,21 @@ function isPassthrough(path: string): boolean {
   return path.startsWith("/_next/") || path === "/api/health" || path === "/api/health/live";
 }
 
-function routeBase(request: NextRequest, path: string): NextResponse {
+function hasSessionCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some((cookie) => cookie.name.startsWith("sb-"));
+}
+
+async function routeBase(request: NextRequest, path: string): Promise<NextResponse> {
   if (path === "/login/regularizar" && !hasSessionCookie(request)) {
-    const login = request.nextUrl.clone();
-    login.pathname = "/login";
-    login.search = "";
+    const login = new URL("/login", `${originOf(loadConfig(), loadConfig().rootDomain)}/`);
     return withCommonHeaders(NextResponse.redirect(login, 303));
   }
   if (BASE_ALLOW.has(path)) {
     const dest = safeJoin("/landing", path);
-    if (!dest) return neutral404(request, path);
+    if (!dest) return neutral404(request);
     const url = request.nextUrl.clone();
     url.pathname = dest;
-    const response = rewrite(request, url, "landing");
+    const response = await rewrite(request, url);
     if (path === "/login" || path === "/login/regularizar") {
       response.headers.set("cache-control", "no-store");
       response.headers.set("referrer-policy", "no-referrer");
@@ -115,25 +118,46 @@ function routeBase(request: NextRequest, path: string): NextResponse {
     return response;
   }
   if (path.startsWith("/api/webhooks/") || path.startsWith("/api/cron/") || path.startsWith("/api/internal/")) {
-    return withCommonHeaders(NextResponse.next());
+    return continueClean(request);
   }
-  return neutral404(request, path);
+  return neutral404(request);
 }
 
-function routeTenant(request: NextRequest, slug: string, path: string): NextResponse {
-  if (path.startsWith("/api/")) return neutral404(request, path);
-  const dest = safeJoin(`/tenant/${slug}`, path);
-  if (!dest) return neutral404(request, path);
+function unavailable(): NextResponse {
+  return withCommonHeaders(
+    new NextResponse("<main><p>Serviço indisponível.</p></main>", {
+      status: 503,
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "retry-after": "30" },
+    }),
+  );
+}
+
+async function routeTenant(request: NextRequest, slug: string, path: string): Promise<NextResponse> {
+  if (path.startsWith("/api/")) return neutral404(request);
+  if (path !== "/robots.txt" && path !== "/sitemap.xml") {
+    try {
+      const row = await getTenantPublic(slug);
+      if (!row) return neutral404(request);
+    } catch (error) {
+      if (error instanceof UpstreamError) return unavailable();
+      throw error;
+    }
+  }
+  const dest = safeJoin("/tenant/x", path);
+  if (!dest) return neutral404(request);
   const url = request.nextUrl.clone();
   url.pathname = dest;
-  return rewrite(request, url, `tenant:${slug}`);
+  return rewrite(request, url);
 }
 
-function hasSessionCookie(request: NextRequest): boolean {
-  return request.cookies.getAll().some((cookie) => cookie.name.startsWith("sb-"));
+function canonicalHost(host: ReturnType<typeof classifyHost>, root: string): string | null {
+  if (host.kind === "base") return root;
+  if (host.kind === "tenant") return `${host.slug}.${root}`;
+  if (host.kind === "special") return `${host.name}.${root}`;
+  return null;
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const raw = rawPathFromUrl(request.url);
   const pathname = request.nextUrl.pathname;
   if ([pathname, raw].some((path) => isUnsafePath(path))) return badPath();
@@ -150,16 +174,15 @@ export function middleware(request: NextRequest) {
   if (host.kind === "redirect") {
     return withCommonHeaders(NextResponse.redirect(new URL(fixed, `${originOf(cfg, host.host)}/`), 308));
   }
-  if (needsSlash) return redirectSameOrigin(request, fixed);
+  const named = canonicalHost(host, cfg.rootDomain);
+  if (needsSlash && named) return redirectCanonical(fixed, named);
 
-  if (isPassthrough(path)) return withCommonHeaders(NextResponse.next());
-  if (/^\/(landing|tenant)(\/|$)/i.test(path)) {
-    const mark = request.headers.get("x-bc-route") ?? "";
-    const internal =
-      (mark === "landing" && path.toLowerCase().startsWith("/landing")) ||
-      (mark.startsWith("tenant:") && path.toLowerCase().startsWith("/tenant/"));
-    if (internal) return withCommonHeaders(NextResponse.next());
-    return neutral404(request, path);
+  if (isPassthrough(path)) return continueClean(request);
+  if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
+    const expected = await routeSeal(pathname);
+    const presented = request.headers.get("x-bc-seal") ?? "";
+    if (sealsEqual(presented, expected)) return continueClean(request);
+    return neutral404(request);
   }
 
   switch (host.kind) {
@@ -168,7 +191,7 @@ export function middleware(request: NextRequest) {
     case "tenant":
       return routeTenant(request, host.slug, path);
     default:
-      return neutral404(request, path);
+      return neutral404(request);
   }
 }
 

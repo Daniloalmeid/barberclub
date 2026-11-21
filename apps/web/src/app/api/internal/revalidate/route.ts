@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { isReservedSlug } from "@barberclub/config/reserved";
 import { isSlugShape } from "@barberclub/config/slug";
-import { headers } from "next/headers";
+import { classifyHost, loadConfig } from "@barberclub/core";
 import { forgetTenant } from "@/server/tenant-public";
 
 export const dynamic = "force-dynamic";
@@ -18,8 +18,9 @@ function authorized(body: string, timestamp: string | null, signature: string | 
 }
 
 export async function POST(request: Request) {
-  const header = (await headers()).get("x-bc-route");
-  if (header !== "landing") {
+  const cfg = loadConfig();
+  const host = classifyHost(request.headers.get("host"), cfg.rootDomain);
+  if (host.kind !== "base") {
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
   }
   const body = await request.text();

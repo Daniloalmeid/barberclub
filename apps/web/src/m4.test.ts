@@ -19,6 +19,7 @@ process.env.APP_ENV = "production";
 process.env.ROOT_DOMAIN = root;
 process.env.PUBLIC_SCHEME = "https";
 process.env.PUBLIC_PORT = "";
+process.env.BC_ROUTE_SECRET = "0123456789abcdef0123456789abcdef";
 const cfg = loadConfig(process.env);
 
 function call(path: string, host = root) {
@@ -69,6 +70,10 @@ describe("safeNextPath e tenantUrl", () => {
     expect(safeNextPath("https://evil.com")).toBeNull();
     expect(safeNextPath("/login")).toBeNull();
     expect(safeNextPath("/x/")).toBeNull();
+    expect(safeNextPath("/\\evil.com")).toBeNull();
+    expect(safeNextPath("/x%0d%0aSet-Cookie:a=b")).toBeNull();
+    expect(safeNextPath("/%5cevil.com")).toBeNull();
+    expect(safeNextPath("\\\\evil.com")).toBeNull();
   });
   it("monta a URL do tenant só com o slug aprovado", () => {
     expect(tenantUrl("abc", "/x", cfg)).toBe("https://abc.barber.workloop.com.br/x");
@@ -95,19 +100,28 @@ describe("resolveLogin", () => {
 
 describe("middleware de host", () => {
   it("mantém o 400 de path antes do host", async () => {
-    const response = call("/..;x/", "naoexiste.barber.workloop.com.br");
+    const response = await call("/..;x/", "naoexiste.barber.workloop.com.br");
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "bad_path" });
   });
-  it("redireciona www e a barra num salto", () => {
-    const response = call("/foo/?a=1", "www.barber.workloop.com.br");
+  it("redireciona www e a barra num salto", async () => {
+    const response = await call("/foo/?a=1", "www.barber.workloop.com.br");
     expect(response.status).toBe(308);
     expect(response.headers.get("location")).toBe("https://barber.workloop.com.br/foo?a=1");
   });
   it("rejeita host malformado", async () => {
-    const response = call("/", "a b.barber.workloop.com.br");
+    const response = await call("/", "a b.barber.workloop.com.br");
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "bad_host" });
+  });
+  it("responde 404 ao path interno com header forjado", async () => {
+    const request = new NextRequest(new URL("/tenant/trial1", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `ativo.${root}`, "x-bc-route": "tenant:trial1", "x-bc-seal": "forjado" },
+    });
+    const response = await middleware(request);
+    const target = response.headers.get("x-middleware-rewrite") ?? "";
+    expect(target).toContain("/__bc/404");
+    expect(target).not.toContain("trial1");
   });
   it("não deixa o rewrite sair do prefixo", () => {
     for (let i = 0; i < 200; i += 1) {

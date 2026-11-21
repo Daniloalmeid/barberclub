@@ -8,6 +8,7 @@ export PUBLIC_SCHEME=https
 export PUBLIC_PORT=
 export SUPABASE_URL="${SUPABASE_URL:-http://127.0.0.1:3999}"
 export SUPABASE_PUBLISHABLE_KEY="${SUPABASE_PUBLISHABLE_KEY:-stub}"
+export BC_ROUTE_SECRET="${BC_ROUTE_SECRET:-0123456789abcdef0123456789abcdef}"
 node "$root/scripts/stub-postgrest.mjs" >/tmp/barberclub-stub.log 2>&1 &
 stub=$!
 cd "$root/apps/web"

@@ -46,6 +46,9 @@ tasks:
       - scripts/test-slug-migration.sh
       - scripts/diagnose-tenant-slugs.sql
       - scripts/stub-postgrest.mjs
+      - scripts/check-login-http.mjs
+      - scripts/check-login-http.sh
+      - scripts/check-dump-counts.sh
       - .github/workflows/ci.yml
       - ops/locks.yml
 

@@ -9,7 +9,14 @@ export function safeNextPath(input: unknown): string | null {
   if (typeof input !== "string" || input.length === 0 || input.length > 512) return null;
   if (!input.startsWith("/") || input.startsWith("//")) return null;
   if (/[\u0000-\u001f\u007f\\]/.test(input) || input.includes("#")) return null;
-  if (isUnsafePath(input)) return null;
+  let decoded = input;
+  try {
+    decoded = decodeURIComponent(input);
+  } catch {
+    return null;
+  }
+  if (/[\u0000-\u001f\u007f\\]/.test(decoded)) return null;
+  if (isUnsafePath(input) || isUnsafePath(decoded)) return null;
   let url: URL;
   try {
     url = new URL(input, "https://next.invalid");

@@ -75,3 +75,7 @@ jobs:
         run: bash scripts/test-slug-migration.sh
       - name: Concorrência C01–C08
         run: pnpm exec tsx supabase/tests/concurrency/run.ts
+      - name: Build para o login contra o Supabase local
+        run: pnpm --filter web build
+      - name: Login, TOTP, handoff e cookie
+        run: bash scripts/check-login-http.sh

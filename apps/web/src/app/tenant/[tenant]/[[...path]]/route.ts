@@ -1,7 +1,7 @@
 import { isReservedSlug } from "@barberclub/config/reserved";
 import { isSlugShape } from "@barberclub/config/slug";
-import { canonicalUrl, loadConfig } from "@barberclub/core";
-import { headers } from "next/headers";
+import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
+import { escapeHtml } from "@/server/html";
 import { getTenantPublic, UpstreamError } from "@/server/tenant-public";
 
 const NOT_FOUND_HTML =
@@ -13,6 +13,7 @@ function neutral(): Response {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "x-robots-tag": "noindex",
     },
   });
 }
@@ -30,23 +31,26 @@ function unavailable(): Response {
   });
 }
 
-export async function GET(_request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
-  const { tenant, path } = await context.params;
-  const route = (await headers()).get("x-bc-route");
-  if (route !== `tenant:${tenant}`) return neutral();
-  if (!isSlugShape(tenant) || isReservedSlug(tenant)) return neutral();
+export async function GET(request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
+  const { path } = await context.params;
+  const cfg = loadConfig();
+  const host = classifyHost(request.headers.get("host"), cfg.rootDomain);
+  if (host.kind !== "tenant") return neutral();
+  const slug = host.slug;
+  if (!isSlugShape(slug) || isReservedSlug(slug)) return neutral();
   let row;
   try {
-    row = await getTenantPublic(tenant);
+    row = await getTenantPublic(slug);
   } catch (error) {
     if (error instanceof UpstreamError) return unavailable();
     throw error;
   }
   if (!row) return neutral();
   if (path && path.length > 0) return neutral();
-  const cfg = loadConfig();
-  const canonical = canonicalUrl({ kind: "tenant", slug: tenant }, "/", cfg);
-  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="index,follow"><link rel="canonical" href="${canonical}"></head><body><main><h1>${String(row.display_name)}</h1><p>${String(row.slug)}</p></main></body></html>`;
+  const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
+  const name = escapeHtml(String(row.display_name ?? ""));
+  const shown = escapeHtml(String(row.slug ?? ""));
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="index,follow"><link rel="canonical" href="${escapeHtml(canonical)}"></head><body><main><h1>${name}</h1><p>${shown}</p></main></body></html>`;
   return new Response(html, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
