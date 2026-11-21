@@ -19,7 +19,14 @@ function loginRedirect(): NextResponse {
   return response;
 }
 
+// Sem Supabase configurado, createJarClient lança e o Next devolveria 500 em branco.
+// Redirecionar para /login é melhor: lá existe uma página dizendo o que falta.
+function supabaseReady(): boolean {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_PUBLISHABLE_KEY);
+}
+
 export async function GET(request: Request) {
+  if (!supabaseReady()) return loginRedirect();
   const jar = createJarClient(readCookieHeader(request.headers.get("cookie")));
   let loaded;
   try {
