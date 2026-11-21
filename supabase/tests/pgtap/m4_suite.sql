@@ -244,6 +244,7 @@ declare
   i integer := 0;
 begin
   loop
+    perform pg_stat_clear_snapshot();
     exit when exists (
       select 1 from pg_stat_activity
        where wait_event_type = 'Lock'

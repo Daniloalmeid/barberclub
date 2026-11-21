@@ -28,6 +28,19 @@ function psql(sql) {
     { input: sql, encoding: "utf8" },
   );
   if (result.status !== 0) throw new Error(result.stderr || "psql");
+  return result.stdout;
+}
+
+function sqlValue(sql) {
+  const listed = spawnSync("docker", ["ps", "-qf", "name=supabase_db_"], { encoding: "utf8" });
+  const cid = listed.stdout.trim().split("\n")[0];
+  const result = spawnSync(
+    "docker",
+    ["exec", "-i", "-u", "postgres", cid, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", sql],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) throw new Error(result.stderr || "psql");
+  return result.stdout.trim();
 }
 
 function raw(method, path, host, { headers = "", body = "" } = {}) {
@@ -457,6 +470,11 @@ try {
   const uoPassword = await postLogin({ email: emails.uo, password });
   check(uoPassword.status === 200 && uoPassword.body.includes("autenticador"), "owner com 2FA recebe o desafio");
   const baseCookie = cookieHeader(uoPassword.setCookie);
+  const repeatEnroll = await postLogin({ acao: "comecar" }, baseCookie);
+  check(
+    repeatEnroll.status === 200 && repeatEnroll.body.includes("Não foi possível cadastrá-lo") && !repeatEnroll.body.includes("data-secret"),
+    "owner com fator nao recadastra",
+  );
   const withBaseCookie = await raw("GET", "/", `ativo.${B}`, { headers: `Cookie: ${baseCookie}\r\n` });
   check(withBaseCookie.body === anonymous.body && withBaseCookie.status === 200, "cookie do host base nao autentica no tenant");
   const uoDone = await postLogin({ acao: "totp", totp: totp(uoSecret) }, baseCookie);
@@ -529,31 +547,63 @@ try {
   const staffChoice = await postLogin({ acao: "escolher", slug: "trial1" }, cookieHeader(bothReady.setCookie) || bothCookie);
   check(staffChoice.status === 303 && staffChoice.location.startsWith(`https://trial1.${B}/auth/handoff?c=`), "owner escolhe o tenant em que e staff");
 
-  const aal1 = await fetch(`${api}/auth/v1/token?grant_type=password`, {
+  const bareId = await createUser("m4http-bare@example.test", password);
+  userIds.push(bareId);
+  psql(`
+    insert into public.profiles (id, full_name) values ('${bareId}', 'bare');
+    insert into public.memberships (tenant_id, user_id, role, status)
+    values ('${ids.ativo}', '${bareId}', 'owner', 'active');
+  `);
+  check(
+    sqlValue("select has_function_privilege('public', 'public_api.my_login_tenants()', 'execute')") === "f",
+    "PUBLIC nao tem EXECUTE em my_login_tenants",
+  );
+  const bareGrant = await fetch(`${api}/auth/v1/token?grant_type=password`, {
     method: "POST",
     headers: { apikey: anon, "content-type": "application/json" },
-    body: JSON.stringify({ email: emails.umix, password }),
+    body: JSON.stringify({ email: "m4http-bare@example.test", password }),
   });
-  const aal1Session = await aal1.json();
+  const bareText = await bareGrant.text();
+  const bareSession = JSON.parse(bareText);
+  if (!bareGrant.ok || !bareSession.access_token) {
+    throw new Error(`token bare ${bareGrant.status} ${bareText.replace(/\s+/g, " ").slice(0, 180)}`);
+  }
+  check(
+    sqlValue(`select count(*) from auth.mfa_factors where user_id = '${bareId}' and factor_type = 'totp' and status = 'verified'`) === "0",
+    "owner do handoff quebrado nao tem fator",
+  );
+  const rpcHeaders = {
+    apikey: anon,
+    authorization: `Bearer ${bareSession.access_token}`,
+    "content-type": "application/json",
+    "content-profile": "public_api",
+    "accept-profile": "public_api",
+  };
+  const rpcBefore = await fetch(`${api}/rest/v1/rpc/my_login_tenants`, { method: "POST", headers: rpcHeaders, body: "{}" });
+  check(rpcBefore.ok, "owner sem fator le my_login_tenants antes do revoke", String(rpcBefore.status));
   const brokenCode = randomBytes(32).toString("hex");
   psql(`
     insert into private.login_handoffs (code_hash, user_id, tenant_id, next_path, sealed, expires_at)
     values (
       extensions.digest('${brokenCode}', 'sha256'),
-      '${umix}',
+      '${bareId}',
       '${ids.ativo}',
       '/',
-      decode('${seal({ access_token: aal1Session.access_token, refresh_token: aal1Session.refresh_token }, umix, brokenCode)}', 'hex'),
+      decode('${seal({ access_token: bareSession.access_token, refresh_token: bareSession.refresh_token }, bareId, brokenCode)}', 'hex'),
       now() + interval '40 seconds'
     );
     revoke execute on function public_api.my_login_tenants() from authenticated;
   `);
   try {
+    const rpcAfter = await fetch(`${api}/rest/v1/rpc/my_login_tenants`, { method: "POST", headers: rpcHeaders, body: "{}" });
+    check(!rpcAfter.ok, "revoke derruba my_login_tenants", String(rpcAfter.status));
     const broken = await raw("GET", `/auth/handoff?c=${brokenCode}`, `ativo.${B}`);
-    check(broken.status === 303 && new URL(broken.location).pathname === "/login", "handoff de owner aal1 com RPC falhando e recusado", broken.location);
+    check(broken.status === 303 && new URL(broken.location).pathname === "/login", "handoff de owner sem fator com RPC falhando e recusado", broken.location);
   } finally {
     psql(`grant execute on function public_api.my_login_tenants() to authenticated`);
   }
+  const rpcRestored = await fetch(`${api}/rest/v1/rpc/my_login_tenants`, { method: "POST", headers: rpcHeaders, body: "{}" });
+  check(rpcRestored.ok, "grant de my_login_tenants voltou", String(rpcRestored.status));
 
   console.log(`integracao=${passed}`);
 } finally {

@@ -846,7 +846,7 @@ export async function getTenantPublic(slug: string): Promise<TenantPublic | null
 
 - **Primário:** a server action que grava (painel ou superadmin) invalida depois do commit.
 - **Backstop:** triggers `AFTER INSERT/UPDATE OF slug, status` em `tenants` e `AFTER INSERT/UPDATE` em `tenant_branding` gravam em `public.outbox_events` (já existe) o evento `tenant_public_changed` com os slugs. O workflow n8n (`infra/n8n`, padrão HMAC da v1.8) chama `POST https://ROOT/api/internal/revalidate` com corpo `{"slugs":[…]}`.
-  - Headers: `X-BC-Timestamp` e `X-BC-Signature = hex(hmac_sha256(REVALIDATE_SECRET, ts + "." + body))`. A janela é de 5 min e a comparação é em tempo constante.
+  - Headers: `x-revalidate-timestamp` e `x-revalidate-signature = hex(hmac_sha256(REVALIDATE_SECRET, ts + "." + body))`. A janela é de 5 min e a comparação é em tempo constante.
   - Cada slug é validado pela regex. A rota só existe no host base e responde 404 neutro nos outros hosts.
 - **Último recurso:** os TTLs de 300 s e 30 s.
 

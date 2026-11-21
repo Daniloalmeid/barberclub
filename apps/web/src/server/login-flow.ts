@@ -97,6 +97,7 @@ export async function resolutionFor(token: string): Promise<LoginResolution> {
 }
 
 function productionRate(): boolean {
+  if (process.env.NODE_ENV === "production") return true;
   return (process.env.APP_ENV ?? "development") !== "development";
 }
 
@@ -190,7 +191,18 @@ async function enrollOrChallenge(client: SupabaseClient, totp: string): Promise<
 }
 
 export async function startEnroll(client: SupabaseClient): Promise<LoginOutcome> {
+  const state = await sessionFacts(client);
+  if (!state.user || !state.token) return { type: "owner-blocked" };
+  let rows: { active: ActiveRow[]; pending: PendingRow[] };
+  try {
+    rows = await tenantRows(state.token);
+  } catch {
+    return { type: "owner-blocked" };
+  }
   const listed = await client.auth.mfa.listFactors();
+  if (listed.error) return { type: "owner-blocked" };
+  const verified = (listed.data?.all ?? []).some((factor) => factor.factor_type === "totp" && factor.status === "verified");
+  if (!ownerAccount(rows.active, rows.pending) || verified) return { type: "owner-blocked" };
   for (const factor of listed.data?.all ?? []) {
     if (factor.factor_type === "totp" && factor.status !== "verified") {
       await client.auth.mfa.unenroll({ factorId: factor.id });

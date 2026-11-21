@@ -18,4 +18,6 @@ O Danilo cria `contato@workloop.com.br` antes de a landing ir ao ar e autoriza a
 
 O Hermes agenda, uma vez por dia, `POST https://barber.workloop.com.br/api/cron/handoffs` com o header `x-cron-secret` igual a `CRON_SECRET`. O agendamento é cron da VPS ou n8n. A aplicação não dispara sozinha. No `backup-daily.sh` da VPS, o `pg_dump` leva `--exclude-table-data=private.login_handoffs`. Este repositório não altera esse script.
 
+Quem montar o n8n do revalidate chama `POST https://barber.workloop.com.br/api/internal/revalidate` no host base. Os headers são `x-revalidate-timestamp` e `x-revalidate-signature` (hex de HMAC-SHA256 de `REVALIDATE_SECRET` sobre `timestamp.corpo`). `X-BC-Timestamp` e `X-BC-Signature` não servem: o middleware descarta `x-bc-*`.
+
 O `config.toml` do repositório só vale para o Supabase local. No GoTrue self-hosted de produção o Hermes liga o TOTP com `GOTRUE_MFA_TOTP_ENROLL_ENABLED=true` e `GOTRUE_MFA_TOTP_VERIFY_ENABLED=true`. Sem isso o dono não chega a AAL2.
