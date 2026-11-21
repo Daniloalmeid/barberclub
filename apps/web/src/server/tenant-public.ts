@@ -65,6 +65,55 @@ export async function getTenantPublic(slug: string): Promise<TenantPublic | null
   }
 }
 
+// Serviços públicos da barbearia (public_api.list_services, com anon EXECUTE).
+// Falha aqui não derruba a página: a barbearia continua aparecendo sem a lista.
+const SERVICE_COLS = "service_id,name,description,duration_min,price_cents,category,display_order";
+
+export type ServicePublic = {
+  service_id: string;
+  name: string;
+  description: string | null;
+  duration_min: number;
+  price_cents: number;
+  category: string | null;
+  display_order: number | null;
+};
+
+async function rpcServices(slug: string): Promise<ServicePublic[]> {
+  const url = process.env[["SUPABASE", "URL"].join("_")];
+  const key = process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")];
+  if (!url || !key) return [];
+  const response = await fetch(`${url.replace(/\/$/, "")}/rest/v1/rpc/list_services?select=${SERVICE_COLS}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      "content-profile": "public_api",
+      "accept-profile": "public_api",
+    },
+    body: JSON.stringify({ p_slug: slug }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(2000),
+  });
+  if (!response.ok) return [];
+  const rows: unknown = await response.json();
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row): row is ServicePublic => {
+    if (!row || typeof row !== "object") return false;
+    const item = row as Record<string, unknown>;
+    return typeof item.service_id === "string" && typeof item.name === "string";
+  });
+}
+
+export async function listServices(slug: string): Promise<ServicePublic[]> {
+  try {
+    return await rpcServices(slug);
+  } catch {
+    return [];
+  }
+}
+
 export function forgetTenant(slug: string): void {
   negative.delete(slug);
 }
