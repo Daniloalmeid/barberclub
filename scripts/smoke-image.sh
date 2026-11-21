@@ -58,8 +58,28 @@ if [[ "$secret_code" == "200" || "$secret_code" == "000" ]]; then
   echo "smoke: sem BC_ROUTE_SECRET o /api/health/live veio ${secret_code}, esperado falha" >&2
   exit 1
 fi
-docker run -d --name "$name" -p "127.0.0.1:${port}:3000" "${prod_env[@]}" "$image" >/dev/null
+root="$(cd "$(dirname "$0")/.." && pwd)"
+stub_port="${SMOKE_STUB_PORT:-3998}"
+STUB_HOST=0.0.0.0 STUB_PORT="$stub_port" node "$root/scripts/stub-postgrest.mjs" >/tmp/barberclub-smoke-stub.log 2>&1 &
+stub=$!
+stub_ready=0
+stub_deadline=$((SECONDS + 10))
+while (( SECONDS < stub_deadline )); do
+  if curl -fsS -o /dev/null -X POST -H "content-type: application/json" -d '{"p_slug":"ativo"}' "http://127.0.0.1:${stub_port}/rest/v1/rpc/get_tenant_public" 2>/dev/null; then
+    stub_ready=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$stub_ready" != "1" ]]; then
+  echo "smoke: stub PostgREST não subiu" >&2
+  kill "$stub" >/dev/null 2>&1 || true
+  exit 1
+fi
+docker run -d --name "$name" --add-host=host.docker.internal:host-gateway -p "127.0.0.1:${port}:3000" \
+  "${prod_env[@]}" -e "SUPABASE_URL=http://host.docker.internal:${stub_port}" "$image" >/dev/null
 cleanup() {
+  kill "$stub" >/dev/null 2>&1 || true
   docker logs "$name" >&2 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
 }
@@ -104,7 +124,11 @@ plain_file="$(mktemp)"
 plain_code="$(curl -s -o "$plain_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
 marked_code="$(curl -s -o "$marked_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
 echo "smoke x-bc-host ativo ${plain_code} com header ${marked_code}"
-if [[ "$marked_code" != "$plain_code" ]] || ! cmp -s "$plain_file" "$marked_file" || grep -q "Trial" "$marked_file"; then
+if [[ "$plain_code" != "200" ]] || ! grep -q "<h1>Ativo</h1>" "$plain_file"; then
+  echo "smoke: a página do ativo não veio 200 com o próprio conteúdo (${plain_code})" >&2
+  exit 1
+fi
+if [[ "$marked_code" != "200" ]] || ! cmp -s "$plain_file" "$marked_file" || grep -q "<h1>Trial" "$marked_file"; then
   echo "smoke: x-bc-host do cliente mudou a página do ativo" >&2
   exit 1
 fi

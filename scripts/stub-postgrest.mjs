@@ -56,4 +56,4 @@ const server = http.createServer(async (req, res) => {
   const found = Object.hasOwn(names, slug) ? [row(slug)] : [];
   res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(found));
 });
-server.listen(port, "127.0.0.1");
+server.listen(port, process.env.STUB_HOST ?? "127.0.0.1");

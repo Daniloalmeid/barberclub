@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Oito casos de forja de host. Sai 0 só se os oito passarem.
-# --edge: só GET HTTPS em *.barber.workloop.com.br, sem subir servidor.
+# --edge --host-a SLUG --host-b SLUG: só GET HTTPS, sem subir servidor.
+# O caso 2 assina /tenant/x com o host B e pede 404 neutro no host A.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ "${1:-}" == "--edge" ]]; then
-  exec node "$root/scripts/check-host-forgery.mjs" --edge
+  exec node "$root/scripts/check-host-forgery.mjs" "$@"
 fi
 # shellcheck source=scripts/standalone-http.sh
 source "$root/scripts/standalone-http.sh"

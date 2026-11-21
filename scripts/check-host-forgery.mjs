@@ -5,11 +5,30 @@ import tls from "node:tls";
 const edge = process.argv.includes("--edge");
 const port = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? 3471);
 const B = "barber.workloop.com.br";
-const ativo = `ativo.${B}`;
-const trial = `trial1.${B}`;
 const rewritePath = "/tenant/x";
 const nonce = process.env.BC_ROUTE_NONCE ?? "";
 const secret = process.env.BC_ROUTE_SECRET ?? "";
+
+function flag(name) {
+  const index = process.argv.indexOf(name);
+  const value = index === -1 ? "" : process.argv[index + 1] ?? "";
+  return value.startsWith("--") ? "" : value;
+}
+
+function asHost(value) {
+  if (!value) return "";
+  return value.includes(".") ? value : `${value}.${B}`;
+}
+
+if (edge && (!flag("--host-a") || !flag("--host-b"))) {
+  console.error("check-host-forgery: --edge exige --host-a e --host-b");
+  process.exit(1);
+}
+
+const ativo = edge ? asHost(flag("--host-a")) : `ativo.${B}`;
+const trial = edge ? asHost(flag("--host-b")) : `trial1.${B}`;
+const base = ativo.split(".").slice(1).join(".");
+const trialLabel = trial.split(".")[0];
 
 function seal(pathname, host) {
   return createHmac("sha256", secret).update(`${nonce}\n${host}\n${pathname}`).digest("hex");
@@ -75,35 +94,29 @@ function report(index, label, ok, detail) {
 
 const ativoPage = await request(ativo, "/");
 const trialPage = await request(trial, "/");
-const neutral = await request(`naoexiste.${B}`, "/");
-const otherNeutral = await request(`ausente.${B}`, "/");
+const neutral = await request(`naoexiste.${base}`, "/");
+const otherNeutral = await request(`ausente.${base}`, "/");
+const slugA = ativo.split(".")[0].toLowerCase();
+const ownsA = ativoPage.status === 200 && ativoPage.body.toLowerCase().includes(slugA) && ativoPage.body !== trialPage.body;
+if (!ownsA) {
+  console.error(`host A não respondeu 200 com conteúdo próprio (status=${ativoPage.status})`);
+  process.exit(1);
+}
 
 const swapped = await request(ativo, "/", `x-bc-host: ${trial}\r\n`);
-report(1, "x-bc-host", same(swapped, ativoPage) && !swapped.body.includes("<h1>Trial"), `status=${swapped.status}`);
+report(1, "x-bc-host", same(swapped, ativoPage) && swapped.body !== trialPage.body, `status=${swapped.status}`);
 
-const ativoSeal = edge ? "" : seal(rewritePath, ativo);
-const reentryExtra = `x-bc-host: ${trial}\r\nx-bc-seal: ${ativoSeal || "ab".repeat(32)}\r\n`;
-let reentryOk = false;
-let reentryDetail = "";
-if (edge) {
-  const replay = await request(ativo, rewritePath, reentryExtra);
-  reentryOk = replay.status === 404 && !replay.body.includes("<h1>Trial");
-  reentryDetail = `status=${replay.status}`;
+const canSeal = /^[0-9a-f]{32}$/.test(nonce) && secret.length >= 32;
+if (canSeal) {
+  const trialSeal = seal(rewritePath, trial.toLowerCase());
+  const replay = await request(ativo, rewritePath, `x-bc-host: ${trial}\r\nx-bc-seal: ${trialSeal}\r\n`);
+  const sealOk = replay.status === 404 && replay.body === neutral.body && replay.body !== trialPage.body;
+  report(2, "selo de /tenant/x no host B", sealOk, `status=${replay.status}`);
+} else if (edge) {
+  console.log("2 selo de /tenant/x no host B fora do --edge sem o nonce do processo");
 } else {
-  const control = await request(`127.0.0.1:${port}`, rewritePath, `x-bc-host: ${ativo}\r\nx-bc-seal: ${ativoSeal}\r\n`);
-  const byIp = await request(`127.0.0.1:${port}`, rewritePath, reentryExtra);
-  const byName = await request(`localhost:${port}`, rewritePath, reentryExtra);
-  reentryOk =
-    same(control, ativoPage) &&
-    byIp.status === 404 &&
-    byName.status === 404 &&
-    byIp.body === neutral.body &&
-    byName.body === neutral.body &&
-    !byIp.body.includes("<h1>Trial") &&
-    !byName.body.includes("<h1>Trial");
-  reentryDetail = `controle=${control.status} ip=${byIp.status} local=${byName.status}`;
+  report(2, "selo de /tenant/x no host B", false, "sem nonce do processo");
 }
-report(2, "reentrada", reentryOk, reentryDetail);
 
 report(
   3,
@@ -122,11 +135,11 @@ report(
   `status=${handoff.status}`,
 );
 
-const duplicated = await request(ativo, "/", `x-bc-host: ${trial}\r\nx-bc-host: outro.${B}\r\n`);
-report(5, "x-bc-host duplicado", same(duplicated, ativoPage), `status=${duplicated.status}`);
+const duplicated = await request(ativo, "/", `x-bc-host: ${trial}\r\nx-bc-host: outro.${base}\r\n`);
+report(5, "x-bc-host duplicado", same(duplicated, ativoPage) && duplicated.body !== trialPage.body, `status=${duplicated.status}`);
 
 const variants = [
-  `x-bc-host: TRIAL1.${B}\r\n`,
+  `x-bc-host: ${trialLabel.toUpperCase()}.${base}\r\n`,
   `x-bc-host: ${trial}:443\r\n`,
   `x-bc-host:  ${trial} \r\n`,
 ];
@@ -135,12 +148,12 @@ for (const extra of variants) varied.push(await request(ativo, "/", extra));
 report(
   6,
   "maiuscula porta espaco",
-  varied.every((item) => same(item, ativoPage)),
+  varied.every((item) => same(item, ativoPage) && item.body !== trialPage.body),
   varied.map((item) => item.status).join(","),
 );
 
 const forwarded = await request(ativo, "/", `X-Forwarded-Host: ${trial}\r\n`);
-report(7, "X-Forwarded-Host", same(forwarded, ativoPage) && !forwarded.body.includes("<h1>Trial"), `status=${forwarded.status}`);
+report(7, "X-Forwarded-Host", same(forwarded, ativoPage) && forwarded.body !== trialPage.body, `status=${forwarded.status}`);
 
 if (!edge) {
   const absolute = await request(ativo, "/", "", `http://${trial}/`);
@@ -148,8 +161,9 @@ if (!edge) {
   report(8, "request-line absoluta", absoluteOk, `status=${absolute.status} location=${absolute.location || "-"}`);
 }
 
+const total = edge ? (canSeal ? 7 : 6) : 8;
 if (failed) {
-  console.error(`forja=${(edge ? 7 : 8) - failed}/${edge ? 7 : 8}`);
+  console.error(`forja=${total - failed}/${total}`);
   process.exit(1);
 }
-console.log(`forja=${edge ? 7 : 8}/${edge ? 7 : 8}`);
+console.log(`forja=${total}/${total}`);
