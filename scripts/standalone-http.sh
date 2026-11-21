@@ -68,7 +68,7 @@ standalone_start() {
   STANDALONE_DIR="$(standalone_prepare "$root")"
   (
     cd "$STANDALONE_DIR"
-    exec node -r "$root/apps/web/absolute-form.cjs" apps/web/server.js
+    exec node -r "$root/scripts/absolute-form.cjs" apps/web/server.js
   ) >"$log" 2>&1 &
 }
 
