@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# Imagem de handoff da M1. O digest do Node é fixado antes da publicação no GHCR (M3).
-# A M1 não publica imagem e não faz deploy.
-ARG NODE_IMAGE=node:24-bookworm-slim
+# Node 22.23.5, o mesmo pin do CI (actions/setup-node node-version: 22.23.5).
+# O digest trava node:22-bookworm-slim. Não é Node 24.
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 FROM ${NODE_IMAGE} AS base
 ENV PNPM_HOME=/pnpm
@@ -38,10 +38,16 @@ USER node
 CMD ["echo", "migrations em /repo/supabase"]
 
 FROM ${NODE_IMAGE} AS production
+ARG APP_VERSION=0.0.0
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV APP_VERSION=$APP_VERSION
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV BUILD_TIME=$BUILD_TIME
 WORKDIR /app
 COPY --from=build --chown=node:node /repo/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /repo/apps/web/.next/static ./apps/web/.next/static

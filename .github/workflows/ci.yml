@@ -15,7 +15,8 @@ jobs:
           version: 10.33.4
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # 22.23.5 é o NODE_VERSION do digest em Dockerfile (ARG NODE_IMAGE).
+          node-version: 22.23.5
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:locks
@@ -62,7 +63,8 @@ jobs:
           version: 10.33.4
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # 22.23.5 é o NODE_VERSION do digest em Dockerfile (ARG NODE_IMAGE).
+          node-version: 22.23.5
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Concorrência C01–C08
