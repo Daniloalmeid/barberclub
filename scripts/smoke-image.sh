@@ -99,6 +99,27 @@ if ! grep -q "Página não encontrada" "$forged_trial" || grep -q "<h1>Ativo</h1
   echo "smoke: header forjado não é o 404 neutro" >&2
   exit 1
 fi
+marked_file="$(mktemp)"
+plain_file="$(mktemp)"
+plain_code="$(curl -s -o "$plain_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
+marked_code="$(curl -s -o "$marked_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
+echo "smoke x-bc-host ativo ${plain_code} com header ${marked_code}"
+if [[ "$marked_code" != "$plain_code" ]] || ! cmp -s "$plain_file" "$marked_file" || grep -q "Trial" "$marked_file"; then
+  echo "smoke: x-bc-host do cliente mudou a página do ativo" >&2
+  exit 1
+fi
+live_marked="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/api/health/live")"
+if [[ "$live_marked" != "200" ]]; then
+  echo "smoke: x-bc-host chegou em /api/health/live (${live_marked})" >&2
+  exit 1
+fi
+handoff_headers="$(mktemp)"
+handoff_code="$(curl -s -D "$handoff_headers" -o /dev/null -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/auth/handoff?c=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")"
+if [[ "$handoff_code" == "200" ]] || grep -qi '^set-cookie: sb-' "$handoff_headers"; then
+  echo "smoke: handoff com x-bc-host forjado veio ${handoff_code}" >&2
+  exit 1
+fi
+echo "smoke handoff x-bc-host ${handoff_code}"
 if docker logs "$name" 2>&1 | grep -F 'does not work with "output: standalone"' >/dev/null; then
   echo "smoke: a imagem avisou que next start não serve com output standalone" >&2
   exit 1

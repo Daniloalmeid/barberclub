@@ -83,9 +83,12 @@ function redirectCanonical(location: string | null, hostName: string) {
 }
 
 function continueClean(request: NextRequest): NextResponse {
+  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
+}
+
+function continueSealed(request: NextRequest): NextResponse {
   const headers = withoutClientMarks(request.headers);
-  const marked = request.headers.get("x-bc-host");
-  if (marked) headers.set("x-bc-host", marked);
+  if (isLocalHop(rawHost(request))) headers.set("x-bc-host", sealHost(request));
   return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } })));
 }
 
@@ -96,8 +99,28 @@ function hideInternalMarks(response: NextResponse): NextResponse {
   return response;
 }
 
+function rawHost(request: NextRequest): string {
+  return request.headers.get("host") ?? "";
+}
+
+function normalizeHost(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.startsWith("[")) return trimmed;
+  const colon = trimmed.lastIndexOf(":");
+  const name = colon === -1 ? trimmed : trimmed.slice(0, colon);
+  const port = colon === -1 ? "" : trimmed.slice(colon);
+  return `${name.endsWith(".") ? name.slice(0, -1) : name}${port}`;
+}
+
+function isLocalHop(raw: string): boolean {
+  const name = normalizeHost(raw).replace(/:\d+$/, "");
+  return name === "localhost" || name === "127.0.0.1" || name === "::1" || name === "0.0.0.0";
+}
+
 function sealHost(request: NextRequest): string {
-  return request.headers.get("x-bc-host") || request.headers.get("host") || "";
+  const real = normalizeHost(rawHost(request));
+  if (!isLocalHop(real)) return real;
+  return normalizeHost(request.headers.get("x-bc-host") ?? "") || real;
 }
 
 async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
@@ -197,7 +220,7 @@ export async function middleware(request: NextRequest) {
   if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
     const expected = await routeSeal(pathname, sealHost(request));
     const presented = request.headers.get("x-bc-seal") ?? "";
-    if (sealsEqual(presented, expected)) return continueClean(request);
+    if (sealsEqual(presented, expected)) return continueSealed(request);
     return neutral404(request);
   }
 
