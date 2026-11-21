@@ -3,8 +3,8 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
-  // O middleware precisa ver o path cru. Sem isto o Next normaliza %2e%2e
-  // antes da função e redireciona /..;x/ com 308.
+  // O middleware vê o path cru e é quem emite o 308 da barra final.
+  // Sem isto o Next colapsa %2e%2e e redireciona antes da validação.
   skipMiddlewareUrlNormalize: true,
   skipTrailingSlashRedirect: true,
   transpilePackages: [

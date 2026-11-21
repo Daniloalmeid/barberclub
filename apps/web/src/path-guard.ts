@@ -23,7 +23,7 @@ function hasBadSegments(path: string): boolean {
 
 export function isUnsafePath(input: string): boolean {
   const raw = stripSuffix(input);
-  if (raw.includes("\\") || raw.includes("\0")) {
+  if (raw.startsWith("//") || raw.includes("\\") || raw.includes("\0")) {
     return true;
   }
   if (ENCODED_DANGER.test(raw)) {
@@ -41,12 +41,31 @@ export function isUnsafePath(input: string): boolean {
     } catch {
       return true;
     }
+    if (decoded.startsWith("//")) {
+      return true;
+    }
     if (decoded === current) {
       break;
     }
     current = decoded;
   }
   return hasBadSegments(current);
+}
+
+/** Path seguro com barra final vira a URL sem barra. A raiz fica. Location é sempre relativo. */
+export function canonicalLocation(pathname: string, search: string): string | null {
+  if (pathname === "/" || !pathname.endsWith("/") || pathname.startsWith("//")) {
+    return null;
+  }
+  const bare = pathname.replace(/\/+$/, "");
+  if (!bare.startsWith("/") || bare.startsWith("//") || bare.includes("\\") || /[\r\n\0]/.test(bare)) {
+    return null;
+  }
+  const query = search === "" ? "" : search.startsWith("?") ? search : `?${search}`;
+  if (/[\r\n\0]/.test(query)) {
+    return null;
+  }
+  return `${bare}${query}`;
 }
 
 export function rawPathFromUrl(url: string): string {

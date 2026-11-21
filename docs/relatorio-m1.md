@@ -5,7 +5,7 @@ A M1 fecha o monorepo, o schema e a suíte de banco. Não há tela de produto, d
 ## O que entrou
 
 - Monorepo pnpm com `apps/web` (Next.js, TypeScript, Tailwind) e os pacotes `config`, `core`, `db`, `payments` e `ui`. A página inicial só declara que esta build não tem produto. Os contratos HTTP são `GET /api/health` e `GET /api/health/live`.
-- Middleware de entrada que responde 400 para path codificado, dot-segment e `;` no segmento, com teste unitário.
+- Middleware de entrada que responde 400 para path perigoso e 308 da barra final para a URL sem barra, com teste unitário.
 - Supabase local, Postgres 17, migrations em `supabase/migrations`.
 - Papéis `ledger_owner` (NOLOGIN) e `backup_reader` (LOGIN, BYPASSRLS, só leitura, sem TEMP e sem CREATE). Schemas `public_api`, `server_api`, `private` e `ledger`. Default privileges restritivos para o `postgres` e para o `ledger_owner`.
 - Tabelas com `tenant_id` e FKs compostas `(tenant_id, id)`. RLS com `USING` e `WITH CHECK` onde há escrita. `staff_busy` com uma origem só e `EXCLUDE gist`.
@@ -20,7 +20,7 @@ A M1 fecha o monorepo, o schema e a suíte de banco. Não há tela de produto, d
 |---|---|
 | pgTAP (`supabase/tests/pgtap/m1_suite.sql`) | 139 asserções, `plan(139)`, T01–T26 e G01–G13, PASS |
 | Concorrência C01–C08 | 20 rodadas cada, deadlocks do banco sem aumento, PASS |
-| Unitário do path e do middleware | 43 testes, PASS |
+| Unitário do path e do middleware | 49 testes, PASS |
 | lint, typecheck e build do Next | PASS |
 
 ## Desvios

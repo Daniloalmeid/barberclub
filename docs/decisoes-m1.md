@@ -10,16 +10,24 @@ No Supabase local o `postgres` da migration não é superusuário, mas conseguiu
 
 `USAGE` em `auth` e as policies de `storage.objects` não cabem na migration: o `postgres` não tem `GRANT OPTION` no schema `auth` nem é dono de `storage.objects`. O complemento idempotente está em `supabase/admin/superuser.sql`, dentro de `BEGIN`/`COMMIT`. É passo obrigatório de todo banco novo (CI, M2 e M3). Quem executa é o Hermes, com autorização do Danilo. O atalho `scripts/apply-superuser-grants.sh` é só CI e Supabase local (`docker exec` + `trust`). Na M2/M3 self-hosted a senha vira `.pgpass` `chmod 600` montado só de leitura (`PGPASSFILE`), num container efêmero `postgres:17`. Não há `--env-file` nem `-e PGPASSWORD`, porque os dois aparecem em `docker inspect`. No Cloud a senha do `supabase_admin` em geral não existe para o cliente: M2/M3 nesse alvo fica bloqueada até um staging provar o papel `postgres`, como está em `infra/runbooks/deploy-supabase-admin.md`. A conferência entra direto como `backup_reader`: as quatro policies nomeadas, com `authenticated` e `tenant-files` no `qual`/`with_check`, sem exigir que não exista policy de outro bucket. Também confere o bucket `tenant-files` privado, RLS em `storage.objects`, `USAGE` em `auth` e `SELECT` em `auth.users` e `auth.identities`. O `backup_reader` ganha `SELECT` só em `storage.buckets` para essa leitura, sem ver `storage.objects`. Sem o passo, o papel lê as tabelas do produto e mesmo assim não entra em `auth`. Não se usa o `postgres` no backup.
 
-## Middleware
+## DECISÃO: URL canônica sem barra final
 
-A M1 cria o middleware, então a rejeição de path entra agora, não fica só anotada para a M2. `next.config.ts` liga `skipMiddlewareUrlNormalize` e `skipTrailingSlashRedirect` para o middleware ver o path cru e o Next não responder 308 em `/..;x/`.
+`next.config.ts` mantém `skipMiddlewareUrlNormalize` e `skipTrailingSlashRedirect`. O middleware vê o path cru e é o único que emite 308. O 308 antigo do Next em `/..;x/` ia para `/..;x` e em seguida 400; não vazava. A flag fica porque, sem ela, `/foo` e `/foo/` serviriam o mesmo status e a M4 herdaria URL duplicada.
 
-No servidor (`next start`, HTTP cru, sem o cliente reescrever o path) o que fica garantido é:
+A ordem no middleware é fixa:
 
-- 400 `{error:"bad_path"}` e `cache-control: no-store`, sem `Location`, para o que ainda chega inteiro: codificação dupla (`/foo/%252e%252e/bar`, `/foo/%252fbar`), `%5c`, `%2f`, `;` no segmento (`/a;b`) e o dot-segment com parâmetro (`/..;x` e `/..;x/`).
-- 404 da página do app, sem `Location` e sem vazar arquivo, para `%2e%2e` simples (`/foo/%2e%2e/bar`) e para `..` literal (`/foo/../bar`). O Next decodifica e colapsa esse segmento antes do middleware; não há como o middleware devolver 400 nesse caso. O resultado é a rota colapsada, que não existe, e não um 308 para fora do app.
+1. Path perigoso (segmento codificado, dot-segment, `;`, barra invertida, `//` no início) responde 400 `{error:"bad_path"}`, `cache-control: no-store`, sem `Location`.
+2. Só então, path seguro com barra final (exceto a raiz `/`) responde 308 para a versão sem nenhuma barra final. A query string permanece. O runtime do Next só aceita `Location` absoluto; um relativo vira 500. O middleware monta a URL no origin do próprio request (`http` ou `https`, sem userinfo) e recusa se o origin do destino divergir. O `next start` reescreve esse header para o path relativo (`/foo`, `/foo?a=1`) antes de enviar. Não há `Location` com host de outro site.
 
-A função pura e o teste em memória cobrem a forma crua, inclusive o `%2e%2e` que o servidor já não entrega. O contrato do processo é `scripts/check-path-http.sh`.
+No servidor (`next start`, HTTP cru) isso aparece assim:
+
+- 400 sem `Location`: codificação dupla (`/foo/%252e%252e/bar`, `/foo/%252fbar`), `%5c`, `%2f`, `;` (`/a;b`), `/..;x` e `/..;x/`.
+- 308 `Location` relativo, emitido pelo middleware: `/foo/` → `/foo`, `/foo/?a=1` → `/foo?a=1`, `/api/health/` → `/api/health`. Várias barras finais saem num salto só (`/foo///` → `/foo`).
+- `/` não redireciona.
+- 404 da página do app, sem `Location`, para `%2e%2e` simples (`/foo/%2e%2e/bar`) e para `..` literal (`/foo/../bar`). O Next colapsa esse segmento antes do middleware.
+- `//evil.com/` não chega no middleware. O Next, antes dele, colapsa barra repetida e responde 308 com `Location: /evil.com/`. É path do mesmo origin, não `//evil.com` e não um host. Não há flag para desligar esse 308. Se o path `//` chegasse na função, a resposta seria 400 sem `Location`; o teste em memória cobre esse ramo.
+
+A função pura cobre a forma crua, inclusive o `%2e%2e` que o servidor já não entrega. O contrato do processo é `scripts/check-path-http.sh`. O que a M4 ainda precisa publicar (canonical e sitemap) está em `docs/requisitos-m4.md`.
 
 O pgTAP que usa dblink lê `barberclub.dblink_password`. Quem define isso é `scripts/run-pgtap.sh` (supabase_admin, senha fora da linha de comando). `supabase test db` sozinho, com o `postgres` local que não é superusuário, não consegue o `ALTER DATABASE` e falha esses casos.
 

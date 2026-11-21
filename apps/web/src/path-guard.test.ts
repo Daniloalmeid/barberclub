@@ -29,7 +29,7 @@ const dotSegments = ["/.", "/./", "/foo/.", "/foo/../bar", "/..", "/../etc/passw
 
 const semicolon = ["/..;x/", "/foo/..;algo/bar", "/foo/..;x", "/a;b", "/foo/bar;baz", "/;"];
 
-const other = ["/foo\\bar", "/foo\\\u0000bar", "/%", "/%ZZ", "/foo/%2"];
+const other = ["/foo\\bar", "/foo\\\u0000bar", "/%", "/%ZZ", "/foo/%2", "//evil.com", "//evil.com/", "///"];
 
 describe("isUnsafePath", () => {
   it.each(safe)("aceita %s", (path) => {

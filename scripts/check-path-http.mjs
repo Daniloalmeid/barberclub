@@ -38,16 +38,21 @@ function assertNoLeak(path, body) {
 }
 
 const cases = [
-  { path: "/foo/%252e%252e/bar", status: 400 },
-  { path: "/foo/%252fbar", status: 400 },
-  { path: "/foo/%5c", status: 400 },
-  { path: "/foo/%2fbar", status: 400 },
-  { path: "/..;x/", status: 400 },
-  { path: "/..;x", status: 400 },
-  { path: "/a;b", status: 400 },
-  { path: "/foo/%2e%2e/bar", status: 404 },
-  { path: "/foo/../bar", status: 404 },
-  { path: "/api/health/live", status: 200 },
+  { path: "/foo/%252e%252e/bar", status: 400, location: "" },
+  { path: "/foo/%252fbar", status: 400, location: "" },
+  { path: "/foo/%5c", status: 400, location: "" },
+  { path: "/foo/%2fbar", status: 400, location: "" },
+  { path: "/..;x/", status: 400, location: "" },
+  { path: "/..;x", status: 400, location: "" },
+  { path: "/a;b", status: 400, location: "" },
+  { path: "/foo/", status: 308, location: "/foo" },
+  { path: "/foo/?a=1", status: 308, location: "/foo?a=1" },
+  { path: "/api/health/", status: 308, location: "/api/health" },
+  { path: "/", status: 200, location: "" },
+  { path: "//evil.com/", status: 308, location: "/evil.com/" },
+  { path: "/foo/%2e%2e/bar", status: 404, location: "" },
+  { path: "/foo/../bar", status: 404, location: "" },
+  { path: "/api/health/live", status: 200, location: "" },
 ];
 
 let failed = 0;
@@ -57,8 +62,11 @@ for (const item of cases) {
   if (response.status !== item.status) {
     problems.push(`status ${response.status} esperado ${item.status}`);
   }
-  if (response.status === 308 || response.location) {
-    problems.push(`redirecionou para ${response.location || "(sem location)"}`);
+  if (response.location !== item.location) {
+    problems.push(`location ${response.location || "(vazio)"} esperado ${item.location || "(vazio)"}`);
+  }
+  if (response.location.startsWith("//") || response.location.includes("://")) {
+    problems.push(`location externo ${response.location}`);
   }
   assertNoLeak(item.path, response.body);
   if (item.status === 400) {
@@ -76,7 +84,7 @@ for (const item of cases) {
     failed += 1;
     console.error(`${item.path}: ${problems.join("; ")}`);
   } else {
-    console.log(`${item.path} ${response.status}`);
+    console.log(`${item.path} ${response.status}${response.location ? ` ${response.location}` : ""}`);
   }
 }
 
