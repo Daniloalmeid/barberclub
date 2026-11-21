@@ -27,6 +27,30 @@ tasks:
       - Dockerfile
       - .gitignore
       - README.md
+  - id: m4-tenant-host
+    owner: grok
+    milestone: M4
+    paths:
+      - apps/web/**
+      - packages/config/**
+      - packages/core/**
+      - supabase/migrations/**
+      - supabase/tests/**
+      - docs/m4-arquitetura.md
+      - docs/hermes-m4.md
+      - docs/decisoes-m4.md
+      - scripts/check-path-http.mjs
+      - scripts/check-host-http.mjs
+      - scripts/check-reserved-sync.mjs
+      - scripts/gen-reserved-slugs-sql.mjs
+      - scripts/test-slug-migration.sh
+      - scripts/diagnose-tenant-slugs.sql
+      - scripts/stub-postgrest.mjs
+      - scripts/check-login-http.mjs
+      - scripts/check-login-http.sh
+      - scripts/check-dump-counts.sh
+      - .github/workflows/ci.yml
+      - ops/locks.yml
 
 vps_canonical:
   - path: /opt/workloop/barberclub/scripts/backup-daily.sh

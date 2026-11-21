@@ -10,8 +10,13 @@ if [[ -z "$cid" ]]; then
 fi
 
 docker exec -u postgres "$cid" pg_dump -h 127.0.0.1 -U backup_reader -d postgres -Fc \
+  --exclude-table-data=private.login_handoffs \
   -n public -n private -n ledger -n public_api -n server_api -f /tmp/schemas.dump
-docker exec -u postgres "$cid" pg_restore --list /tmp/schemas.dump | "$root/scripts/count-dump-tables.sh" 28
+docker exec -u postgres "$cid" pg_restore --list /tmp/schemas.dump | "$root/scripts/count-dump-tables.sh" 32
+if docker exec -u postgres "$cid" pg_restore --list /tmp/schemas.dump | grep -F 'TABLE DATA private login_handoffs'; then
+  echo "check-dump-counts: o dump inclui os tokens de login_handoffs" >&2
+  exit 1
+fi
 
 docker exec -u postgres "$cid" pg_dump -h 127.0.0.1 -U backup_reader -d postgres -Fc \
   -t auth.users -t auth.identities -f /tmp/auth.dump

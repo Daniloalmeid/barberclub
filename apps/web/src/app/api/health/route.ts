@@ -20,7 +20,7 @@ function buildIdentity() {
     version: process.env.APP_VERSION ?? "0.0.0",
     commit: process.env.GIT_COMMIT ?? "unknown",
     buildTime: process.env.BUILD_TIME ?? "unknown",
-    env: process.env.APP_ENV ?? process.env.NODE_ENV ?? "development",
+    env: process.env.APP_ENV ?? "unknown",
   };
 }
 
