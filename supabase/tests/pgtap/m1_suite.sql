@@ -1,7 +1,7 @@
 -- Suíte T01–T26 e G01–G13. A transação desfaz a fixture.
 begin;
 
-select * from no_plan();
+select * from plan(132);
 
 create temp table fx (name text primary key, id uuid not null);
 grant select on fx to public;
@@ -1184,6 +1184,171 @@ select ok(
        and has_function_privilege('backup_reader', p.oid, 'execute')
   ),
   'G13 sem execute em security definer nosso'
+);
+
+select is(
+  (select c.condeferrable
+     from pg_constraint c
+    where c.conname = 'webhook_events_tenant_payment_fkey'
+      and c.contype = 'f'),
+  true,
+  'webhook_events FK condeferrable'
+);
+select is(
+  (select c.condeferred
+     from pg_constraint c
+    where c.conname = 'webhook_events_tenant_payment_fkey'
+      and c.contype = 'f'),
+  true,
+  'webhook_events FK condeferred'
+);
+select is(
+  (select c.condeferrable from pg_constraint c where c.conname = 'refunds_tenant_payment_fkey'),
+  false,
+  'refunds FK composta e imediata'
+);
+select is(
+  (select c.condeferrable from pg_constraint c where c.conname = 'refund_requests_tenant_payment_fkey'),
+  false,
+  'refund_requests FK composta e imediata'
+);
+select pg_temp.err(
+  format(
+    'insert into public.refunds (tenant_id, payment_id, amount_cents, status) values (%L, %L, 1, ''refunded'')',
+    pg_temp.uid('tenant_b'),
+    (select p.id from public.payments p where p.tenant_id = pg_temp.uid('tenant_a') limit 1)
+  ),
+  '23503',
+  'refund de outro tenant'
+);
+select pg_temp.err(
+  format(
+    'insert into public.refund_requests (tenant_id, payment_id, reason, status, idempotency_key) values (%L, %L, ''x'', ''pending'', ''fk-cross'')',
+    pg_temp.uid('tenant_b'),
+    (select p.id from public.payments p
+      where p.tenant_id = pg_temp.uid('tenant_a')
+        and not exists (select 1 from public.refund_requests r where r.payment_id = p.id)
+      limit 1)
+  ),
+  '23503',
+  'refund_request de outro tenant'
+);
+
+select lives_ok(
+  $$create extension if not exists dblink with schema extensions$$,
+  'dblink para o commit da FK'
+);
+select lives_ok(
+  $$select extensions.dblink_connect('fkchk', 'host=' || host(inet_server_addr()) || ' dbname=postgres user=postgres password=postgres')$$,
+  'sessao separada da FK'
+);
+select lives_ok(
+  $q$select extensions.dblink_exec('fkchk', $setup$
+    begin;
+    insert into auth.users (
+      instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+      confirmation_token, recovery_token, email_change_token_new, email_change
+    ) values (
+      '00000000-0000-0000-0000-000000000000', '33333333-3333-4333-8333-333333333333',
+      'authenticated', 'authenticated', 'fk-wh@example.test',
+      extensions.crypt('password', extensions.gen_salt('bf')), now(),
+      '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, now(), now(),
+      '', '', '', ''
+    );
+    insert into public.tenants (id, slug, display_name, status, timezone) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'fkwha', 'FK A', 'active', 'UTC'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', 'fkwhb', 'FK B', 'active', 'UTC');
+    insert into public.customers (id, tenant_id, user_id, full_name) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', '33333333-3333-4333-8333-333333333333', 'FK');
+    insert into public.staff (id, tenant_id, display_name) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'FK');
+    insert into public.services (id, tenant_id, name, duration_min, price_cents) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'FK', 30, 1000);
+    insert into public.staff_services (tenant_id, staff_id, service_id, active) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12', true);
+    insert into public.appointments (
+      id, tenant_id, staff_id, customer_id, service_id, starts_at, ends_at, status, idempotency_key, request_hash
+    ) values (
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa13',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12',
+      timestamptz '2028-01-01 10:00:00+00', timestamptz '2028-01-01 10:30:00+00',
+      'canceled', 'fk-wh', extensions.digest('fk-wh', 'sha256')
+    );
+    insert into public.payments (id, tenant_id, appointment_id, amount_cents, status) values
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa13', 1000, 'pending');
+    commit;
+  $setup$)$q$,
+  'fixture commitada para a FK do webhook'
+);
+select lives_ok(
+  $$select extensions.dblink_exec('fkchk', 'begin')$$,
+  'transacao do webhook cruzado'
+);
+select lives_ok(
+  $$select extensions.dblink_exec('fkchk', $q$
+    insert into public.webhook_events (provider, event_id, tenant_id, payment_id)
+    values ('qa', 'fk-wh-cross', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14')
+  $q$)$$,
+  'insert do webhook cruzado ainda nao checa a FK'
+);
+select pg_temp.err(
+  $$select extensions.dblink_exec('fkchk', 'commit')$$,
+  '23503',
+  'webhook de outro tenant falha no commit'
+);
+select lives_ok(
+  $$select extensions.dblink_exec('fkchk', 'rollback')$$,
+  'limpa a transacao abortada'
+);
+select lives_ok(
+  $q$select extensions.dblink_exec('fkchk', $setup$
+    begin;
+    delete from public.payments where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14';
+    delete from public.appointments where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa13';
+    delete from public.staff_services where staff_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11';
+    delete from public.services where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12';
+    delete from public.staff where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11';
+    delete from public.customers where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10';
+    delete from public.tenants where id in ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2');
+    delete from auth.users where id = '33333333-3333-4333-8333-333333333333';
+    commit;
+  $setup$)$q$,
+  'apaga a fixture da FK'
+);
+select lives_ok($$select extensions.dblink_disconnect('fkchk')$$, 'fecha a sessao da FK');
+
+select is(
+  (select coalesce(array_agg(pol.polname order by pol.polname), '{}')
+     from pg_policy pol
+     join pg_class c on c.oid = pol.polrelid
+     join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'storage' and c.relname = 'objects'),
+  array['tenant_objects_delete', 'tenant_objects_insert', 'tenant_objects_select', 'tenant_objects_update']::name[],
+  'storage.objects tem exatamente as 4 policies do tenant'
+);
+select ok(
+  exists (
+    select 1 from storage.buckets
+     where id = 'tenant-files' and name = 'tenant-files' and public = false
+  ),
+  'bucket tenant-files existe e é privado'
+);
+select ok(
+  (select c.relrowsecurity
+     from pg_class c
+     join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'storage' and c.relname = 'objects'),
+  'RLS ligado em storage.objects'
+);
+select ok(
+  has_schema_privilege('backup_reader', 'auth', 'usage')
+  and has_table_privilege('backup_reader', 'auth.users', 'select')
+  and has_table_privilege('backup_reader', 'auth.identities', 'select'),
+  'backup_reader le auth.users e auth.identities'
 );
 
 select * from finish();

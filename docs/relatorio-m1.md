@@ -18,7 +18,7 @@ A M1 fecha o monorepo, o schema e a suíte de banco. Não há tela de produto, d
 
 | Suíte | Resultado |
 |---|---|
-| pgTAP (`supabase/tests/pgtap/m1_suite.sql`) | 113 asserções, T01–T26 e G01–G13, PASS |
+| pgTAP (`supabase/tests/pgtap/m1_suite.sql`) | 132 asserções, T01–T26 e G01–G13, PASS |
 | Concorrência C01–C08 | 20 rodadas cada, deadlocks do banco sem aumento, PASS |
 | Unitário do path e do middleware | 43 testes, PASS |
 | lint, typecheck e build do Next | PASS |
@@ -27,7 +27,7 @@ A M1 fecha o monorepo, o schema e a suíte de banco. Não há tela de produto, d
 
 Estão justificados em `docs/decisoes-m1.md`. Os que mudam o desenho:
 
-- `webhook_events.payment_id` não tem FK. A checagem da FK trava `payments` antes do advisory e o C08 entra em deadlock.
+- `webhook_events.tenant_id` é `NOT NULL` e a FK composta `(tenant_id, payment_id)` é `DEFERRABLE INITIALLY DEFERRED`. O `INSERT` segue antes do advisory; a checagem fica no `COMMIT`. `refunds` e `refund_requests` usam a mesma composta, imediata, porque o `INSERT` já ocorre depois do advisory e do `FOR UPDATE`.
 - Triggers de soma zero e de coerência do `staff_busy` são `SECURITY DEFINER`. No `COMMIT` eles rodam com o usuário da sessão, que não lê essas tabelas.
 - `USAGE` em `auth` e as policies de `storage.objects` saem de `supabase/admin/superuser.sql`, aplicado pelo CI como `supabase_admin`. A migration, sozinha, não tem `GRANT OPTION`.
 - T17 e G09 não varrem os schemas gerenciados do Supabase.

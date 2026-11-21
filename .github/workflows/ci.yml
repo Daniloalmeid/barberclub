@@ -37,6 +37,10 @@ jobs:
         run: supabase start -x realtime,imgproxy,mailpit,studio,edge-runtime,logflare,vector,supavisor,postgres-meta
       - name: Grants que só o supabase_admin consegue
         run: bash scripts/apply-superuser-grants.sh
+      - name: Conferir policies e bucket do supabase_admin
+        run: bash scripts/verify-superuser-grants.sh
+      - name: Provar que o verificador falha sem uma policy
+        run: bash scripts/verify-superuser-grants-negative.sh
       - name: pgTAP T01–T26 e G01–G13
         run: supabase test db supabase/tests/pgtap
       - uses: pnpm/action-setup@v6

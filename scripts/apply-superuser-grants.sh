@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Aplica o que só o supabase_admin consegue. Não é backup e não usa PGPASSWORD na linha de comando.
+# Somente CI e Supabase local: docker exec + trust, sem senha na linha de comando.
+# O caminho por rede (M2/M3) é scripts/psql-from-env-file.sh com o SQL versionado.
+# Não é backup e não usa -e PGPASSWORD.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cid="$(docker ps -qf name=supabase_db_ | head -1)"

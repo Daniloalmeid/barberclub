@@ -1,9 +1,17 @@
 -- Roda como supabase_admin (trust local no container), nunca como postgres.
 -- O papel da migration não tem GRANT OPTION em auth nem é dono de storage.objects.
 -- Idempotente. Não é script de backup.
+-- BEGIN/COMMIT: o drop/create das policies não pode parar no meio, senão o storage fecha.
+
+begin;
 
 grant usage on schema auth to backup_reader;
 grant select on auth.users, auth.identities to backup_reader;
+
+-- Só a tabela de buckets, para o verificador de leitura enxergar o nome e public.
+-- Não concede SELECT em storage.objects.
+grant usage on schema storage to backup_reader;
+grant select on storage.buckets to backup_reader;
 
 insert into storage.buckets (id, name, public)
 values ('tenant-files', 'tenant-files', false)
@@ -52,3 +60,5 @@ create policy tenant_objects_delete on storage.objects
     and (storage.foldername(name))[1] ~* '^[0-9a-f-]{36}$'
     and private.has_role(((storage.foldername(name))[1])::uuid, array['owner', 'manager', 'staff'])
   );
+
+commit;
