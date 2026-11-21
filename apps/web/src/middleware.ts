@@ -29,13 +29,19 @@ function badHost() {
   return NextResponse.json({ error: "bad_host" }, { status: 400, headers: { "cache-control": "no-store" } });
 }
 
-function contentSecurityPolicy(): string {
+// CSP com nonce. Sem o nonce, o Next não executa os próprios scripts inline de
+// bootstrap (o push do payload RSC): o HTML chega completo e a página é pintada em
+// branco, porque a árvore do React nunca é hidratada. Medido: <main> no DOM, PNG e
+// PDF vazios. O Next lê o nonce do header content-security-policy da REQUISIÇÃO e o
+// aplica às suas tags <script>, por isso ele vai nos dois lados.
+function contentSecurityPolicy(nonce?: string): string {
   const supabase = process.env.SUPABASE_URL;
   const connect = supabase ? `'self' ${supabase}` : "'self'";
+  const script = nonce ? `'self' 'nonce-${nonce}'` : "'self'";
   return [
     "default-src 'self'",
     "img-src 'self' https: data:",
-    "script-src 'self'",
+    `script-src ${script}`,
     "style-src 'self' 'unsafe-inline'",
     `connect-src ${connect}`,
     "frame-ancestors 'none'",
@@ -45,8 +51,25 @@ function contentSecurityPolicy(): string {
   ].join("; ");
 }
 
-function withCommonHeaders(response: NextResponse): NextResponse {
-  response.headers.set("content-security-policy", contentSecurityPolicy());
+function newNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function attachNonce(headers: Headers): string {
+  const nonce = newNonce();
+  headers.set("x-nonce", nonce);
+  headers.set("content-security-policy", contentSecurityPolicy(nonce));
+  return nonce;
+}
+
+function withCommonHeaders(response: NextResponse, nonce?: string): NextResponse {
+  const value = nonce ?? newNonce();
+  response.headers.set("content-security-policy", contentSecurityPolicy(value));
+  response.headers.set("x-nonce", value);
   if ((process.env.APP_ENV ?? "development") !== "production") {
     response.headers.set("x-robots-tag", "noindex, nofollow");
   }
@@ -83,7 +106,9 @@ function redirectCanonical(location: string | null, hostName: string) {
 }
 
 function continueClean(request: NextRequest): NextResponse {
-  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
+  const headers = withoutClientMarks(request.headers);
+  const nonce = attachNonce(headers);
+  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } }), nonce));
 }
 
 async function localNeutral(request: NextRequest): Promise<NextResponse> {
@@ -92,13 +117,15 @@ async function localNeutral(request: NextRequest): Promise<NextResponse> {
   url.search = "";
   const headers = withoutClientMarks(request.headers);
   headers.set("x-bc-seal", await routeSeal("/__bc/404", mintHost(request)));
-  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
+  const nonce = attachNonce(headers);
+  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } }), nonce));
 }
 
 function continueSealed(request: NextRequest, host: string): NextResponse {
   const headers = withoutClientMarks(request.headers);
   headers.set("x-bc-host", host);
-  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } })));
+  const nonce = attachNonce(headers);
+  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } }), nonce));
 }
 
 function hideInternalMarks(response: NextResponse): NextResponse {
@@ -138,7 +165,8 @@ async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
   const host = mintHost(request);
   if (host && !isLocalHop(host)) headers.set("x-bc-host", host);
   headers.set("x-bc-seal", await routeSeal(url.pathname, host));
-  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
+  const nonce = attachNonce(headers);
+  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } }), nonce));
 }
 
 function isPassthrough(path: string): boolean {
