@@ -97,10 +97,15 @@ function form(fields) {
     .join("&");
 }
 
-async function postLogin(fields, cookie = "") {
+let xffSeq = 20;
+async function postLogin(fields, cookie = "", options = {}) {
   const body = form(fields);
+  const xff = Object.hasOwn(options, "xff") ? options.xff : `198.51.100.${(xffSeq++ % 200) + 1}`;
+  const origin = options.origin !== false;
+  const xffLine = xff ? `X-Forwarded-For: ${xff}\r\n` : "X-Forwarded-For:\r\n";
+  const originLine = origin ? `Origin: https://${B}\r\n` : "";
   return raw("POST", "/login", B, {
-    headers: `Origin: https://${B}\r\nContent-Type: application/x-www-form-urlencoded\r\n${cookie ? `Cookie: ${cookie}\r\n` : ""}`,
+    headers: `${originLine}${xffLine}Content-Type: application/x-www-form-urlencoded\r\n${cookie ? `Cookie: ${cookie}\r\n` : ""}`,
     body,
   });
 }
@@ -413,12 +418,20 @@ try {
   check(picked.status === 303 && picked.location.startsWith(`https://trial1.${B}/auth/handoff?c=`), "escolha de trial1");
 
   const mix = await postLogin({ email: emails.umix, password });
-  check(mix.status === 200 && !mix.location.includes("handoff") && mix.body.includes("não entra sem ele"), "owner sem fator nao recebe handoff");
-  const mixSecret = mix.body.match(/data-secret="([^"]+)"/)?.[1] ?? "";
-  const mixFactor = mix.body.match(/name="fator" value="([^"]+)"/)?.[1] ?? "";
+  check(mix.status === 200 && !mix.location.includes("handoff") && mix.body.includes("não entra sem ele") && !mix.body.includes("data-secret"), "owner sem fator nao recebe handoff nem cadastra no primeiro passo");
+  const mixCookie = cookieHeader(mix.setCookie);
+  const firstEnroll = await postLogin({ acao: "comecar" }, mixCookie);
+  const secretA = firstEnroll.body.match(/data-secret="([^"]*)"/)?.[1] ?? "";
+  check(secretA.length > 8, "primeiro cadastro entrega o segredo");
+  const abandoned = await raw("GET", "/login", B, { headers: `Cookie: ${mixCookie}\r\n` });
+  check(!abandoned.body.includes("data-secret"), "GET nao cadastra fator");
+  const secondEnroll = await postLogin({ acao: "comecar" }, mixCookie);
+  const secretB = secondEnroll.body.match(/data-secret="([^"]*)"/)?.[1] ?? "";
+  const mixFactor = secondEnroll.body.match(/name="fator" value="([^"]+)"/)?.[1] ?? "";
+  check(secretB.length > 8 && secretB !== secretA, "cadastro abandonado e refeito troca o fator");
   const mixDone = await postLogin(
-    { acao: "cadastrar", fator: mixFactor, totp: totp(mixSecret) },
-    cookieHeader(mix.setCookie),
+    { acao: "cadastrar", fator: mixFactor, totp: totp(secretB) },
+    mixCookie,
   );
   check(mixDone.status === 200 && mixDone.body.includes("/login/regularizar") && mixDone.body.includes("Ativo &lt;img&gt;"), "owner misto depois do TOTP ve a lista");
   check(!mixDone.location, "owner misto nao e redirecionado sozinho");
@@ -471,6 +484,76 @@ try {
   check(cronDenied.status === 401, "cron sem segredo");
   const cron = await raw("POST", "/api/cron/handoffs", B, { headers: `x-cron-secret: ${process.env.CRON_SECRET}\r\n` });
   check(cron.status === 200 && cron.body.includes("deleted"), "cron limpa handoff vencido");
+
+  const noOrigin = await postLogin({ email: emails.u1, password }, "", { origin: false, xff: "198.51.100.9" });
+  check(noOrigin.status === 403, "POST sem Origin e recusado");
+
+  let emailLimited = 0;
+  for (let i = 0; i < 21; i += 1) {
+    const attempt = await postLogin({ email: "m4http-limite-email@example.test", password: "errada" }, "", { xff: "198.51.100.21" });
+    emailLimited = attempt.status;
+  }
+  check(emailLimited === 429, "429 por e-mail", String(emailLimited));
+
+  let ipLimited = 0;
+  for (let i = 0; i < 81; i += 1) {
+    const attempt = await postLogin({ email: `m4http-limite-ip-${i}@example.test`, password: "errada" }, "", { xff: "198.51.100.80" });
+    ipLimited = attempt.status;
+  }
+  check(ipLimited === 429, "429 por IP", String(ipLimited));
+
+  let noneLimited = 0;
+  for (let i = 0; i < 11; i += 1) {
+    const attempt = await postLogin({ email: `m4http-limite-none-${i}@example.test`, password: "errada" }, "", { xff: null });
+    noneLimited = attempt.status;
+  }
+  check(noneLimited === 429, "429 no bucket none", String(noneLimited));
+
+  const bothId = await createUser("m4http-both@example.test", password);
+  userIds.push(bothId);
+  psql(`
+    insert into public.profiles (id, full_name) values ('${bothId}', 'both');
+    insert into public.memberships (tenant_id, user_id, role, status) values
+      ('${ids.outro}', '${bothId}', 'owner', 'active'),
+      ('${ids.trial1}', '${bothId}', 'staff', 'active');
+  `);
+  const both = await postLogin({ email: "m4http-both@example.test", password });
+  const bothCookie = cookieHeader(both.setCookie);
+  const bothEnroll = await postLogin({ acao: "comecar" }, bothCookie);
+  const bothSecret = bothEnroll.body.match(/data-secret="([^"]*)"/)?.[1] ?? "";
+  const bothFactor = bothEnroll.body.match(/name="fator" value="([^"]+)"/)?.[1] ?? "";
+  const bothReady = await postLogin(
+    { acao: "cadastrar", fator: bothFactor, totp: totp(bothSecret) },
+    bothCookie,
+  );
+  const staffChoice = await postLogin({ acao: "escolher", slug: "trial1" }, cookieHeader(bothReady.setCookie) || bothCookie);
+  check(staffChoice.status === 303 && staffChoice.location.startsWith(`https://trial1.${B}/auth/handoff?c=`), "owner escolhe o tenant em que e staff");
+
+  const aal1 = await fetch(`${api}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: { apikey: anon, "content-type": "application/json" },
+    body: JSON.stringify({ email: emails.umix, password }),
+  });
+  const aal1Session = await aal1.json();
+  const brokenCode = randomBytes(32).toString("hex");
+  psql(`
+    insert into private.login_handoffs (code_hash, user_id, tenant_id, next_path, sealed, expires_at)
+    values (
+      extensions.digest('${brokenCode}', 'sha256'),
+      '${umix}',
+      '${ids.ativo}',
+      '/',
+      decode('${seal({ access_token: aal1Session.access_token, refresh_token: aal1Session.refresh_token }, umix, brokenCode)}', 'hex'),
+      now() + interval '40 seconds'
+    );
+    revoke execute on function public_api.my_login_tenants() from authenticated;
+  `);
+  try {
+    const broken = await raw("GET", `/auth/handoff?c=${brokenCode}`, `ativo.${B}`);
+    check(broken.status === 303 && new URL(broken.location).pathname === "/login", "handoff de owner aal1 com RPC falhando e recusado", broken.location);
+  } finally {
+    psql(`grant execute on function public_api.my_login_tenants() to authenticated`);
+  }
 
   console.log(`integracao=${passed}`);
 } finally {

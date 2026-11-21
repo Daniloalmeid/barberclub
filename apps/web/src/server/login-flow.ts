@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   NONE_TENANT_MESSAGE,
   resolveLogin,
@@ -12,12 +12,14 @@ import { createHandoff, handoffLocation } from "./handoff";
 
 const EMAIL_LIMIT = 20;
 const IP_LIMIT = 80;
+const NONE_IP_LIMIT = 10;
 const WINDOW_SECONDS = 900;
 
 export type LoginOutcome =
   | { type: "fail" }
   | { type: "limit" }
   | { type: "mfa" }
+  | { type: "enroll-needed" }
   | { type: "enroll"; factorId: string; secret: string }
   | { type: "owner-blocked" }
   | { type: "none" }
@@ -94,10 +96,20 @@ export async function resolutionFor(token: string): Promise<LoginResolution> {
   );
 }
 
+function productionRate(): boolean {
+  return (process.env.APP_ENV ?? "development") !== "development";
+}
+
 async function rateHit(bucket: string, limit: number): Promise<boolean> {
   const url = process.env[["SUPABASE", "URL"].join("_")] ?? "";
   const secret = process.env[["SUPABASE", "SECRET", "KEY"].join("_")] ?? "";
-  if (!url || !secret) return true;
+  if (!url || !secret) {
+    if (productionRate()) {
+      console.error("rate_limit_hit sem credencial");
+      return false;
+    }
+    return true;
+  }
   const response = await fetch(`${url.replace(/\/$/, "")}/rest/v1/rpc/rate_limit_hit`, {
     method: "POST",
     headers: {
@@ -110,23 +122,31 @@ async function rateHit(bucket: string, limit: number): Promise<boolean> {
     body: JSON.stringify({ p_bucket: bucket, p_limit: limit, p_window_seconds: WINDOW_SECONDS }),
     cache: "no-store",
   });
-  if (!response.ok) return true;
+  if (!response.ok) {
+    if (productionRate()) {
+      console.error(`rate_limit_hit indisponivel status=${response.status}`);
+      return false;
+    }
+    return true;
+  }
   return (await response.json()) === true;
 }
 
 export async function loginAllowed(email: string, ip: string): Promise<boolean> {
   const hash = createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+  const ipLimit = ip === "none" ? NONE_IP_LIMIT : IP_LIMIT;
   const [byEmail, byIp] = await Promise.all([
     rateHit(`login:email:${hash}`, EMAIL_LIMIT),
-    rateHit(`login:ip:${ip}`, IP_LIMIT),
+    rateHit(`login:ip:${ip}`, ipLimit),
   ]);
   return byEmail && byIp;
 }
 
 export async function totpAllowed(userId: string, ip: string): Promise<boolean> {
+  const ipLimit = ip === "none" ? NONE_IP_LIMIT : IP_LIMIT;
   const [byUser, byIp] = await Promise.all([
     rateHit(`totp:user:${userId}`, EMAIL_LIMIT),
-    rateHit(`totp:ip:${ip}`, IP_LIMIT),
+    rateHit(`totp:ip:${ip}`, ipLimit),
   ]);
   return byUser && byIp;
 }
@@ -166,7 +186,17 @@ async function enrollOrChallenge(client: SupabaseClient, totp: string): Promise<
     if (verified.error) return { type: "mfa" };
     return null;
   }
-  const enrolled = await client.auth.mfa.enroll({ factorType: "totp", friendlyName: "owner" });
+  return { type: "enroll-needed" };
+}
+
+export async function startEnroll(client: SupabaseClient): Promise<LoginOutcome> {
+  const listed = await client.auth.mfa.listFactors();
+  for (const factor of listed.data?.all ?? []) {
+    if (factor.factor_type === "totp" && factor.status !== "verified") {
+      await client.auth.mfa.unenroll({ factorId: factor.id });
+    }
+  }
+  const enrolled = await client.auth.mfa.enroll({ factorType: "totp", friendlyName: `owner-${randomUUID()}` });
   if (enrolled.error || !enrolled.data?.id || !enrolled.data.totp?.secret) return { type: "owner-blocked" };
   return { type: "enroll", factorId: enrolled.data.id, secret: enrolled.data.totp.secret };
 }
@@ -200,7 +230,8 @@ export async function continueSession(client: SupabaseClient, next: string | nul
   if (!state.user || !state.token || !state.refresh) return { type: "fail" };
   const { active, pending } = await tenantRows(state.token);
   if (ownerAccount(active, pending) && state.aal !== "aal2") {
-    return (await enrollOrChallenge(client, "")) ?? { type: "mfa" };
+    const gate = await enrollOrChallenge(client, "");
+    return gate ?? { type: "mfa" };
   }
   return outcomeFor(state.user.id, state.token, state.refresh, next, state.aal);
 }

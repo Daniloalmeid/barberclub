@@ -1,5 +1,5 @@
 begin;
-select * from plan(66);
+select * from plan(67);
 
 create or replace function pg_temp.err(sql text, code text, descr text) returns text
 language plpgsql as $$
@@ -233,12 +233,31 @@ select lives_ok(
   'fixture commitada do consume concorrente'
 );
 select extensions.dblink_exec('h1', 'begin');
-select lives_ok(
-  $$select user_id from extensions.dblink('h1', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')') as t(user_id uuid)$$,
-  'a primeira sessao consome e segura a linha'
+select is(
+  (select count(*) from extensions.dblink('h1', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')') as t(user_id uuid)),
+  1::bigint,
+  'h1 devolve uma linha e segura o lock'
 );
 select extensions.dblink_send_query('h2', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')');
-select pg_sleep(0.2);
+select lives_ok($$do $w$
+declare
+  i integer := 0;
+begin
+  loop
+    exit when exists (
+      select 1 from pg_stat_activity
+       where wait_event_type = 'Lock'
+         and query like '%consume_login_handoff%'
+         and pid <> pg_backend_pid()
+    );
+    i := i + 1;
+    if i > 100 then
+      raise exception 'h2 nao ficou em Lock';
+    end if;
+    perform pg_sleep(0.05);
+  end loop;
+end
+$w$ $$, 'h2 espera no lock');
 select extensions.dblink_exec('h1', 'commit');
 create temp table pg_temp_race2 (user_id uuid);
 insert into pg_temp_race2 select * from extensions.dblink_get_result('h2') as t(user_id uuid);

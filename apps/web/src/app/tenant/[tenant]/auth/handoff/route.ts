@@ -58,38 +58,30 @@ export async function GET(request: Request) {
   const hasFactor = (factors.data?.totp?.length ?? 0) > 0;
   let owner = false;
   try {
-    const [active, pending] = await Promise.all([
-      fetch(`${(process.env[["SUPABASE", "URL"].join("_")] ?? "").replace(/\/$/, "")}/rest/v1/rpc/my_login_tenants`, {
-        method: "POST",
-        headers: {
-          apikey: process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")] ?? "",
-          authorization: `Bearer ${consumed.session.access_token}`,
-          "content-type": "application/json",
-          "content-profile": "public_api",
-          "accept-profile": "public_api",
-        },
-        body: "{}",
-        cache: "no-store",
-      }).then(async (response) => (response.ok ? ((await response.json()) as Array<{ role?: string }>) : [])),
-      fetch(`${(process.env[["SUPABASE", "URL"].join("_")] ?? "").replace(/\/$/, "")}/rest/v1/rpc/my_regularization_tenants`, {
-        method: "POST",
-        headers: {
-          apikey: process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")] ?? "",
-          authorization: `Bearer ${consumed.session.access_token}`,
-          "content-type": "application/json",
-          "content-profile": "public_api",
-          "accept-profile": "public_api",
-        },
-        body: "{}",
-        cache: "no-store",
-      }).then(async (response) => (response.ok ? ((await response.json()) as unknown[]) : [])),
+    const base = (process.env[["SUPABASE", "URL"].join("_")] ?? "").replace(/\/$/, "");
+    const key = process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")] ?? "";
+    const headers = {
+      apikey: key,
+      authorization: `Bearer ${consumed.session.access_token}`,
+      "content-type": "application/json",
+      "content-profile": "public_api",
+      "accept-profile": "public_api",
+    };
+    const [loginResponse, regularResponse] = await Promise.all([
+      fetch(`${base}/rest/v1/rpc/my_login_tenants`, { method: "POST", headers, body: "{}", cache: "no-store" }),
+      fetch(`${base}/rest/v1/rpc/my_regularization_tenants`, { method: "POST", headers, body: "{}", cache: "no-store" }),
     ]);
+    if (!loginResponse.ok || !regularResponse.ok) throw new Error("rpc");
+    const active = (await loginResponse.json()) as Array<{ role?: string }>;
+    const pending = (await regularResponse.json()) as unknown[];
+    if (!Array.isArray(active) || !Array.isArray(pending)) throw new Error("rpc");
     owner = ownerAccount(
       active.map((row) => ({ slug: "", display_name: "", role: row.role ?? "" })),
       pending.map(() => ({ slug: "", display_name: "", status: "" })),
     );
   } catch {
-    owner = true;
+    await jar.client.auth.signOut({ scope: "local" }).catch(() => undefined);
+    return refused();
   }
   if (set.error || user.data.user?.id !== consumed.userId || (owner && aal.data?.currentLevel !== "aal2") || (hasFactor && aal.data?.currentLevel !== "aal2")) {
     await jar.client.auth.signOut({ scope: "local" }).catch(() => undefined);

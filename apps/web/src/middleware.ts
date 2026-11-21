@@ -88,10 +88,7 @@ function continueClean(request: NextRequest): NextResponse {
 
 function hideInternalMarks(response: NextResponse): NextResponse {
   for (const key of [...response.headers.keys()]) {
-    const name = key.toLowerCase();
-    if (name.startsWith("x-bc-") || name.startsWith("x-middleware-request-") || name === "x-middleware-override-headers") {
-      response.headers.delete(key);
-    }
+    if (key.toLowerCase().startsWith("x-bc-")) response.headers.delete(key);
   }
   return response;
 }

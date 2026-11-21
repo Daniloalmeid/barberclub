@@ -24,8 +24,8 @@ export async function POST(request: Request) {
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
   }
   const body = await request.text();
-  const stamp = request.headers.get("x-bc-timestamp");
-  const signature = request.headers.get("x-bc-signature");
+  const stamp = request.headers.get("x-revalidate-timestamp");
+  const signature = request.headers.get("x-revalidate-signature");
   if (!authorized(body, stamp, signature)) {
     return Response.json({ error: "unauthorized" }, { status: 401, headers: { "cache-control": "no-store" } });
   }

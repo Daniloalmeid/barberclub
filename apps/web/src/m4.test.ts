@@ -114,6 +114,18 @@ describe("middleware de host", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "bad_host" });
   });
+  it("entrega o selo no rewrite e não repassa x-bc do cliente", async () => {
+    const request = new NextRequest(new URL("/", "http://slug.barber.workloop.com.br"), {
+      headers: { host: root, "x-bc-route": "landing", "x-bc-evil": "1" },
+    });
+    const response = await middleware(request);
+    const override = (response.headers.get("x-middleware-override-headers") ?? "").toLowerCase().split(",");
+    expect(override).toContain("x-bc-seal");
+    expect(override).not.toContain("x-bc-route");
+    expect(override).not.toContain("x-bc-evil");
+    expect((response.headers.get("x-middleware-request-x-bc-seal") ?? "").length).toBeGreaterThan(16);
+    expect(response.headers.get("x-middleware-request-x-bc-route")).toBeNull();
+  });
   it("responde 404 ao path interno com header forjado", async () => {
     const request = new NextRequest(new URL("/tenant/trial1", "http://slug.barber.workloop.com.br"), {
       headers: { host: `ativo.${root}`, "x-bc-route": "tenant:trial1", "x-bc-seal": "forjado" },
@@ -141,6 +153,15 @@ describe("loadConfig", () => {
         NODE_ENV: "production",
         APP_ENV: "production",
         ROOT_DOMAIN: "barber.workloop.com.br",
+        PUBLIC_SCHEME: "https",
+        PUBLIC_PORT: "",
+      }),
+    ).toThrow(/BC_ROUTE_SECRET/);
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        APP_ENV: "staging",
+        ROOT_DOMAIN: "barber-staging.workloop.com.br",
         PUBLIC_SCHEME: "https",
         PUBLIC_PORT: "",
       }),
