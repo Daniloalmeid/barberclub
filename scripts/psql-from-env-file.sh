@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# psql contra o Postgres alvo. O DSN fica num arquivo chmod 600, nunca em argumento
-# e nunca em -e PGPASSWORD. A cópia usada no comando é apagada no fim, e o
-# container efêmero postgres:17 também.
+# psql contra o Postgres alvo. A senha fica num .pgpass chmod 600, montado :ro
+# em PGPASSFILE. Não usa --env-file nem -e PGPASSWORD (os dois aparecem em
+# docker inspect). Um env-file KEY=VALUE é convertido em .pgpass num tmpfs
+# (/run ou /dev/shm), nunca em /tmp. O .pgpass original é montado direto.
 #
-#   BARBERCLUB_PG_ENV_FILE=/caminho/cred.env scripts/psql-from-env-file.sh supabase/admin/superuser.sql
-#   BARBERCLUB_PG_ENV_FILE=/caminho/cred.env scripts/psql-from-env-file.sh -tA -c "select 1"
+#   BARBERCLUB_PG_ENV_FILE=/run/secrets/admin.pgpass scripts/psql-from-env-file.sh arquivo.sql
+#   BARBERCLUB_PG_ENV_FILE=/run/secrets/admin.pgpass scripts/psql-from-env-file.sh -tA -c "select 1"
 #
-# cred.env é KEY=VALUE (PGHOST, PGPORT, PGUSER, PGDATABASE, PGPASSWORD).
-# O script transforma esse arquivo em .pgpass chmod 600 e monta :ro em PGPASSFILE.
-# Não usa --env-file nem -e PGPASSWORD: os dois aparecem em docker inspect.
-# .pgpass (hostname:port:database:username:password) é montado direto.
+# Porta 6543 (transaction pooler) é recusada. Fora de localhost, PGSSLMODE
+# vazio vira verify-full. No host do Supabase Cloud, verify-full é obrigatório.
 set -euo pipefail
 
 if [[ "$#" -lt 1 ]]; then
@@ -43,21 +42,15 @@ if [[ "$mode" != "600" ]]; then
   exit 2
 fi
 
-tmp="$(mktemp)"
-pgpass="$(mktemp)"
 name="barberclub-psql-$$"
+generated=""
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
-  if [[ -f "$tmp" ]]; then
-    shred -u "$tmp" 2>/dev/null || rm -f "$tmp"
-  fi
-  if [[ -f "$pgpass" ]]; then
-    shred -u "$pgpass" 2>/dev/null || rm -f "$pgpass"
+  if [[ -n "$generated" && -f "$generated" ]]; then
+    shred -u "$generated" 2>/dev/null || rm -f "$generated"
   fi
 }
 trap cleanup EXIT
-cp "$file" "$tmp"
-chmod 600 "$tmp" "$pgpass"
 
 psql_args=()
 mounts=()
@@ -80,7 +73,7 @@ pgpass_escape() {
 
 env_value() {
   local key="$1" line
-  line="$(grep -E "^${key}=" "$tmp" | head -1 || true)"
+  line="$(grep -E "^${key}=" "$file" | head -1 || true)"
   line="${line#*=}"
   line="${line%$'\r'}"
   if [[ "$line" == \"*\" && "$line" == *\" ]]; then
@@ -89,7 +82,24 @@ env_value() {
   printf '%s' "$line"
 }
 
-if grep -q '^[A-Za-z_][A-Za-z0-9_]*=' "$tmp"; then
+tmpfs_dir() {
+  local fstype
+  fstype="$(findmnt -n -o FSTYPE -T /run 2>/dev/null || true)"
+  if [[ "$fstype" == "tmpfs" ]]; then
+    install -d -m 700 /run/secrets
+    printf '%s' /run/secrets
+    return
+  fi
+  fstype="$(findmnt -n -o FSTYPE -T /dev/shm 2>/dev/null || true)"
+  if [[ "$fstype" == "tmpfs" ]]; then
+    printf '%s' /dev/shm
+    return
+  fi
+  echo "psql-from-env-file: sem tmpfs para converter o env-file" >&2
+  exit 2
+}
+
+if grep -q '^[A-Za-z_][A-Za-z0-9_]*=' "$file"; then
   host="$(env_value PGHOST)"
   port="$(env_value PGPORT)"
   db="$(env_value PGDATABASE)"
@@ -99,30 +109,64 @@ if grep -q '^[A-Za-z_][A-Za-z0-9_]*=' "$tmp"; then
     echo "psql-from-env-file: env-file sem PGHOST, PGPORT, PGDATABASE, PGUSER ou PGPASSWORD" >&2
     exit 2
   fi
+  generated="$(tmpfs_dir)/barberclub-pgpass.$$"
+  install -m 600 /dev/null "$generated"
   printf '%s:%s:%s:%s:%s\n' \
     "$(pgpass_escape "$host")" \
     "$(pgpass_escape "$port")" \
     "$(pgpass_escape "$db")" \
     "$(pgpass_escape "$user")" \
-    "$(pgpass_escape "$pass")" > "$pgpass"
+    "$(pgpass_escape "$pass")" > "$generated"
   pass=""
-  chmod 600 "$pgpass"
+  chmod 600 "$generated"
+  pgpass="$generated"
 else
-  IFS=: read -r host port db user _ < "$tmp"
+  IFS=: read -r host port db user _ < "$file"
   if [[ -z "${host:-}" || -z "${port:-}" || -z "${db:-}" || -z "${user:-}" ]]; then
     echo "psql-from-env-file: .pgpass incompleto" >&2
     exit 2
   fi
-  cp "$tmp" "$pgpass"
-  chmod 600 "$pgpass"
+  pgpass="$file"
+fi
+
+if [[ "$port" == "6543" ]]; then
+  echo "psql-from-env-file: porta 6543 é o transaction pooler; use 5432 direto ou o session pooler" >&2
+  exit 2
+fi
+
+sslmode="${PGSSLMODE:-}"
+case "$host" in
+  localhost|127.0.0.1|::1) ;;
+  *)
+    if [[ -z "$sslmode" ]]; then
+      sslmode=verify-full
+    fi
+    ;;
+esac
+case "$host" in
+  *.supabase.co|*.pooler.supabase.com|*.supabase.com)
+    if [[ "$sslmode" != "verify-full" ]]; then
+      echo "psql-from-env-file: Cloud exige PGSSLMODE=verify-full" >&2
+      exit 2
+    fi
+    ;;
+esac
+
+docker_env=(-e "PGHOST=${host}" -e "PGPORT=${port}" -e "PGDATABASE=${db}" -e "PGUSER=${user}" -e PGPASSFILE=/pgpass/pgpass)
+if [[ -n "$sslmode" ]]; then
+  docker_env+=(-e "PGSSLMODE=${sslmode}")
+fi
+if [[ -n "${PGSSLROOTCERT:-}" ]]; then
+  if [[ ! -f "$PGSSLROOTCERT" ]]; then
+    echo "psql-from-env-file: PGSSLROOTCERT não é arquivo" >&2
+    exit 2
+  fi
+  mounts+=(-v "${PGSSLROOTCERT}:/pgssl/root.crt:ro")
+  docker_env+=(-e PGSSLROOTCERT=/pgssl/root.crt)
 fi
 
 docker run --name "$name" --network host \
-  -e PGHOST="$host" \
-  -e PGPORT="$port" \
-  -e PGDATABASE="$db" \
-  -e PGUSER="$user" \
-  -e PGPASSFILE=/pgpass/pgpass \
+  "${docker_env[@]}" \
   -v "${pgpass}:/pgpass/pgpass:ro" \
   "${mounts[@]}" \
   postgres:17 \

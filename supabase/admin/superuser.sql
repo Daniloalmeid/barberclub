@@ -1,4 +1,7 @@
--- Roda como supabase_admin (trust local no container), nunca como postgres.
+-- Local e CI: supabase_admin, trust dentro do container.
+-- Self-hosted na rede: o mesmo arquivo, pelo .pgpass do supabase_admin.
+-- Cloud: a tentativa é o papel postgres do projeto. Se CREATE POLICY falhar
+-- porque o dono é supabase_storage_admin, o deploy continua bloqueado.
 -- O papel da migration não tem GRANT OPTION em auth nem é dono de storage.objects.
 -- Idempotente. Não é script de backup.
 -- BEGIN/COMMIT: o drop/create das policies não pode parar no meio, senão o storage fecha.

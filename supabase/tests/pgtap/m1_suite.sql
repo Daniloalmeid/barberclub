@@ -1326,10 +1326,10 @@ select ok(
     where p.schemaname = 'storage'
       and p.tablename = 'objects'
       and (
-        (p.policyname = 'tenant_objects_select' and p.cmd = 'SELECT' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check is null)
-        or (p.policyname = 'tenant_objects_insert' and p.cmd = 'INSERT' and p.roles::text = '{authenticated}' and p.qual is null and p.with_check like '%tenant-files%')
-        or (p.policyname = 'tenant_objects_update' and p.cmd = 'UPDATE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check like '%tenant-files%')
-        or (p.policyname = 'tenant_objects_delete' and p.cmd = 'DELETE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check is null)
+        (p.policyname = 'tenant_objects_select' and p.permissive = 'PERMISSIVE' and p.cmd = 'SELECT' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.qual like '%foldername%' and p.qual like '%has_role%' and p.qual !~* 'or[[:space:]]+true' and p.with_check is null)
+        or (p.policyname = 'tenant_objects_insert' and p.permissive = 'PERMISSIVE' and p.cmd = 'INSERT' and p.roles::text = '{authenticated}' and p.qual is null and p.with_check like '%tenant-files%' and p.with_check like '%foldername%' and p.with_check like '%has_role%' and p.with_check !~* 'or[[:space:]]+true')
+        or (p.policyname = 'tenant_objects_update' and p.permissive = 'PERMISSIVE' and p.cmd = 'UPDATE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.qual like '%foldername%' and p.qual like '%has_role%' and p.with_check like '%tenant-files%' and p.with_check !~* 'or[[:space:]]+true')
+        or (p.policyname = 'tenant_objects_delete' and p.permissive = 'PERMISSIVE' and p.cmd = 'DELETE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.qual like '%foldername%' and p.qual like '%has_role%' and p.qual !~* 'or[[:space:]]+true' and p.with_check is null)
       )) = 4,
   'as 4 policies tenant-files para authenticated'
 );
