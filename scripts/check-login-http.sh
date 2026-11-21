@@ -41,7 +41,7 @@ for _ in $(seq 1 40); do
     fi
     auth="$(docker ps -qf name=supabase_auth_ | head -1)"
     if [[ -n "$auth" ]]; then
-      docker logs --tail 40 "$auth" 2>&1 | rg -o '"error":"[^"]{0,180}"|"msg":"[^"]{0,120}"|"error_code":"[^"]*"' | tail -20 >&2 || true
+      docker logs --tail 40 "$auth" 2>&1 | grep -E 'error finding user|Scan error|querying schema' | tail -20 >&2 || true
     fi
     exit 1
   fi
