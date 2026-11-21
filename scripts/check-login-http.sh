@@ -36,8 +36,14 @@ cleanup() {
 trap cleanup EXIT
 for _ in $(seq 1 40); do
   if curl -fsS -H "Host: barber.workloop.com.br" "http://127.0.0.1:${port}/api/health/live" >/dev/null; then
-    node "$root/scripts/check-login-http.mjs" "$port"
-    exit 0
+    if node "$root/scripts/check-login-http.mjs" "$port"; then
+      exit 0
+    fi
+    auth="$(docker ps -qf name=supabase_auth_ | head -1)"
+    if [[ -n "$auth" ]]; then
+      docker logs --tail 40 "$auth" 2>&1 | rg -o '"error":"[^"]{0,180}"|"msg":"[^"]{0,120}"|"error_code":"[^"]*"' | tail -20 >&2 || true
+    fi
+    exit 1
   fi
   sleep 0.5
 done

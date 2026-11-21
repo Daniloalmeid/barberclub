@@ -160,7 +160,10 @@ async function enroll(email, password) {
     headers: { apikey: anon, "content-type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
-  if (!signed.ok) throw new Error(`token ${signed.status}`);
+  if (!signed.ok) {
+    const detail = await signed.text();
+    throw new Error(`token ${signed.status} ${detail.replace(/\s+/g, " ").slice(0, 180)}`);
+  }
   const session = await signed.json();
   const factor = await fetch(`${api}/auth/v1/factors`, {
     method: "POST",
