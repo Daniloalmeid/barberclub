@@ -1,4 +1,4 @@
-import { createCipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
 
@@ -194,9 +194,10 @@ async function enroll(email, password) {
   return secret;
 }
 
-function seal(session) {
+function seal(session, userId, code) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", handoffKey, iv);
+  cipher.setAAD(Buffer.from(`${userId}\n${createHash("sha256").update(code).digest("hex")}`));
   const body = Buffer.concat([cipher.update(JSON.stringify(session), "utf8"), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), body]).toString("hex");
 }
@@ -372,7 +373,7 @@ try {
       '${u1}',
       '${ids.ativo}',
       $next$/\\evil.com$next$,
-      decode('${seal({ access_token: plantedSession.access_token, refresh_token: plantedSession.refresh_token })}', 'hex'),
+      decode('${seal({ access_token: plantedSession.access_token, refresh_token: plantedSession.refresh_token }, u1, plantedCode)}', 'hex'),
       now() + interval '40 seconds'
     );
   `);
@@ -388,7 +389,7 @@ try {
       '${u1}',
       '${ids.ativo}',
       '/',
-      decode('${seal({ access_token: plantedSession.access_token, refresh_token: plantedSession.refresh_token })}', 'hex'),
+      decode('${seal({ access_token: plantedSession.access_token, refresh_token: plantedSession.refresh_token }, u1, crossCode)}', 'hex'),
       now() + interval '40 seconds'
     );
   `);
@@ -412,8 +413,15 @@ try {
   check(picked.status === 303 && picked.location.startsWith(`https://trial1.${B}/auth/handoff?c=`), "escolha de trial1");
 
   const mix = await postLogin({ email: emails.umix, password });
-  check(mix.status === 200 && mix.body.includes("/login/regularizar") && mix.body.includes("Ativo &lt;img&gt;"), "owner misto ve a lista e a regularizacao");
-  check(!mix.location, "owner misto nao e redirecionado sozinho");
+  check(mix.status === 200 && !mix.location.includes("handoff") && mix.body.includes("não entra sem ele"), "owner sem fator nao recebe handoff");
+  const mixSecret = mix.body.match(/data-secret="([^"]+)"/)?.[1] ?? "";
+  const mixFactor = mix.body.match(/name="fator" value="([^"]+)"/)?.[1] ?? "";
+  const mixDone = await postLogin(
+    { acao: "cadastrar", fator: mixFactor, totp: totp(mixSecret) },
+    cookieHeader(mix.setCookie),
+  );
+  check(mixDone.status === 200 && mixDone.body.includes("/login/regularizar") && mixDone.body.includes("Ativo &lt;img&gt;"), "owner misto depois do TOTP ve a lista");
+  check(!mixDone.location, "owner misto nao e redirecionado sozinho");
 
   const uosPassword = await postLogin({ email: emails.uos, password });
   check(uosPassword.status === 200 && uosPassword.body.includes("autenticador") && !uosPassword.location.includes("handoff"), "senha do owner suspenso pede TOTP");

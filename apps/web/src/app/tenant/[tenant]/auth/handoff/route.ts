@@ -1,6 +1,7 @@
 import { classifyHost, loadConfig, originOf, safeNextPath } from "@barberclub/core";
 import { NextResponse } from "next/server";
 import { consumeHandoff, loginUrl } from "@/server/handoff";
+import { ownerAccount } from "@/server/login-flow";
 import { cookieOptions, createJarClient, readCookieHeader } from "@/server/supabase";
 import { getTenantPublic, UpstreamError } from "@/server/tenant-public";
 
@@ -55,7 +56,43 @@ export async function GET(request: Request) {
   const factors = await jar.client.auth.mfa.listFactors();
   const aal = await jar.client.auth.mfa.getAuthenticatorAssuranceLevel();
   const hasFactor = (factors.data?.totp?.length ?? 0) > 0;
-  if (set.error || user.data.user?.id !== consumed.userId || (hasFactor && aal.data?.currentLevel !== "aal2")) {
+  let owner = false;
+  try {
+    const [active, pending] = await Promise.all([
+      fetch(`${(process.env[["SUPABASE", "URL"].join("_")] ?? "").replace(/\/$/, "")}/rest/v1/rpc/my_login_tenants`, {
+        method: "POST",
+        headers: {
+          apikey: process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")] ?? "",
+          authorization: `Bearer ${consumed.session.access_token}`,
+          "content-type": "application/json",
+          "content-profile": "public_api",
+          "accept-profile": "public_api",
+        },
+        body: "{}",
+        cache: "no-store",
+      }).then(async (response) => (response.ok ? ((await response.json()) as Array<{ role?: string }>) : [])),
+      fetch(`${(process.env[["SUPABASE", "URL"].join("_")] ?? "").replace(/\/$/, "")}/rest/v1/rpc/my_regularization_tenants`, {
+        method: "POST",
+        headers: {
+          apikey: process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")] ?? "",
+          authorization: `Bearer ${consumed.session.access_token}`,
+          "content-type": "application/json",
+          "content-profile": "public_api",
+          "accept-profile": "public_api",
+        },
+        body: "{}",
+        cache: "no-store",
+      }).then(async (response) => (response.ok ? ((await response.json()) as unknown[]) : [])),
+    ]);
+    owner = ownerAccount(
+      active.map((row) => ({ slug: "", display_name: "", role: row.role ?? "" })),
+      pending.map(() => ({ slug: "", display_name: "", status: "" })),
+    );
+  } catch {
+    owner = true;
+  }
+  if (set.error || user.data.user?.id !== consumed.userId || (owner && aal.data?.currentLevel !== "aal2") || (hasFactor && aal.data?.currentLevel !== "aal2")) {
+    await jar.client.auth.signOut({ scope: "local" }).catch(() => undefined);
     return refused();
   }
   const next = safeNextPath(consumed.nextPath) ?? "/";

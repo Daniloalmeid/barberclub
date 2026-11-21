@@ -136,6 +136,15 @@ describe("loadConfig", () => {
   it("recusa produção sem APP_ENV e sem ROOT_DOMAIN", () => {
     expect(() => loadConfig({ NODE_ENV: "production" })).toThrow(/APP_ENV/);
     expect(() => loadConfig({ NODE_ENV: "production", APP_ENV: "production" })).toThrow(/ROOT_DOMAIN/);
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        APP_ENV: "production",
+        ROOT_DOMAIN: "barber.workloop.com.br",
+        PUBLIC_SCHEME: "https",
+        PUBLIC_PORT: "",
+      }),
+    ).toThrow(/BC_ROUTE_SECRET/);
   });
 });
 

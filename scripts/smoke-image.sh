@@ -38,6 +38,26 @@ if [[ "$closed_code" == "200" || "$closed_code" == "000" ]]; then
   echo "smoke: sem ROOT_DOMAIN o /api/health/live veio ${closed_code}, esperado falha" >&2
   exit 1
 fi
+secret_name="barberclub-smoke-secret-$$"
+secret_port="${SMOKE_SECRET_PORT:-3458}"
+docker run -d --name "$secret_name" -p "127.0.0.1:${secret_port}:3000" \
+  -e NODE_ENV=production -e APP_ENV=production \
+  -e ROOT_DOMAIN=barber.workloop.com.br -e PUBLIC_SCHEME=https -e PUBLIC_PORT= \
+  "$image" >/dev/null
+secret_code="000"
+secret_deadline=$((SECONDS + 20))
+while (( SECONDS < secret_deadline )); do
+  secret_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${secret_port}/api/health/live" || true)"
+  if [[ "$secret_code" != "000" ]]; then
+    break
+  fi
+  sleep 1
+done
+docker rm -f "$secret_name" >/dev/null 2>&1 || true
+if [[ "$secret_code" == "200" || "$secret_code" == "000" ]]; then
+  echo "smoke: sem BC_ROUTE_SECRET o /api/health/live veio ${secret_code}, esperado falha" >&2
+  exit 1
+fi
 docker run -d --name "$name" -p "127.0.0.1:${port}:3000" "${prod_env[@]}" "$image" >/dev/null
 cleanup() {
   docker logs "$name" >&2 || true
@@ -55,6 +75,11 @@ while (( SECONDS < deadline )); do
 done
 if [[ -z "$live" ]]; then
   echo "smoke: /api/health/live não respondeu 200 em 30s" >&2
+  exit 1
+fi
+home_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: barber.workloop.com.br" "http://127.0.0.1:${port}/")"
+if [[ "$home_code" != "200" ]]; then
+  echo "smoke: GET / com Host de produção veio ${home_code}" >&2
   exit 1
 fi
 printf '%s\n' "$live"

@@ -83,13 +83,23 @@ function redirectCanonical(location: string | null, hostName: string) {
 }
 
 function continueClean(request: NextRequest): NextResponse {
-  return withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } }));
+  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
+}
+
+function hideInternalMarks(response: NextResponse): NextResponse {
+  for (const key of [...response.headers.keys()]) {
+    const name = key.toLowerCase();
+    if (name.startsWith("x-bc-") || name.startsWith("x-middleware-request-") || name === "x-middleware-override-headers") {
+      response.headers.delete(key);
+    }
+  }
+  return response;
 }
 
 async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
   const headers = withoutClientMarks(request.headers);
-  headers.set("x-bc-seal", await routeSeal(url.pathname));
-  return withCommonHeaders(NextResponse.rewrite(url, { request: { headers } }));
+  headers.set("x-bc-seal", await routeSeal(url.pathname, request.headers.get("host") ?? ""));
+  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
 }
 
 function isPassthrough(path: string): boolean {
@@ -179,7 +189,7 @@ export async function middleware(request: NextRequest) {
 
   if (isPassthrough(path)) return continueClean(request);
   if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
-    const expected = await routeSeal(pathname);
+    const expected = await routeSeal(pathname, request.headers.get("host") ?? "");
     const presented = request.headers.get("x-bc-seal") ?? "";
     if (sealsEqual(presented, expected)) return continueClean(request);
     return neutral404(request);

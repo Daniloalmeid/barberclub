@@ -54,6 +54,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const origin = request.headers.get("origin");
+  const cfg = loadConfig();
+  if (!origin || origin !== originOf(cfg, cfg.rootDomain)) {
+    return new NextResponse("Forbidden", { status: 403, headers: { "cache-control": "no-store" } });
+  }
   const formData = await request.formData();
   if (String(formData.get("acao") ?? "") !== "sair") return loginRedirect();
   const jar = createJarClient(readCookieHeader(request.headers.get("cookie")));

@@ -1,5 +1,5 @@
 begin;
-select * from plan(63);
+select * from plan(66);
 
 create or replace function pg_temp.err(sql text, code text, descr text) returns text
 language plpgsql as $$
@@ -83,6 +83,16 @@ select is((select count(*) from public_api.my_login_tenants()), 1::bigint, 'owne
 reset role;
 
 select is((select p.pronargs from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public_api' and p.proname = 'my_regularization_tenants'), 0::smallint, 'regularizacao sem parametro');
+select is(
+  (select pg_get_function_result(p.oid) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public_api' and p.proname = 'my_login_tenants'),
+  'TABLE(slug text, display_name text, role text)',
+  'my_login_tenants devolve slug, nome e papel'
+);
+select is(
+  (select pg_get_function_result(p.oid) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public_api' and p.proname = 'my_regularization_tenants'),
+  'TABLE(slug text, display_name text, status text, reason_code text, action_code text)',
+  'my_regularization_tenants devolve as cinco colunas'
+);
 
 select pg_temp.err(
   $$select server_api.create_login_handoff('44444444-4444-4444-8444-444444444443', 'ativo', '/', repeat('a', 64), '\\x01')$$,
@@ -222,13 +232,17 @@ select lives_ok(
   $setup$)$q$,
   'fixture commitada do consume concorrente'
 );
-select extensions.dblink_send_query('h1', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')');
+select extensions.dblink_exec('h1', 'begin');
+select lives_ok(
+  $$select user_id from extensions.dblink('h1', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')') as t(user_id uuid)$$,
+  'a primeira sessao consome e segura a linha'
+);
 select extensions.dblink_send_query('h2', 'select user_id from server_api.consume_login_handoff(''racetenant'', ''race-code'')');
-create temp table pg_temp_race1 (user_id uuid);
+select pg_sleep(0.2);
+select extensions.dblink_exec('h1', 'commit');
 create temp table pg_temp_race2 (user_id uuid);
-insert into pg_temp_race1 select * from extensions.dblink_get_result('h1') as t(user_id uuid);
 insert into pg_temp_race2 select * from extensions.dblink_get_result('h2') as t(user_id uuid);
-select is((select count(*) from pg_temp_race1) + (select count(*) from pg_temp_race2), 1::bigint, 'so uma consume concorrente vence');
+select is((select count(*) from pg_temp_race2), 0::bigint, 'a segunda consume espera o lock e perde');
 select extensions.dblink_connect('h3', 'host=' || host(inet_server_addr()) || ' dbname=' || current_database() || ' user=' || current_user || ' password=' || current_setting('barberclub.dblink_password'));
 select lives_ok(
   $$select extensions.dblink_exec('h3', 'delete from public.memberships where tenant_id = ''66666666-6666-4666-8666-666666666661''; delete from private.login_handoffs where tenant_id = ''66666666-6666-4666-8666-666666666661''; delete from public.tenants where id = ''66666666-6666-4666-8666-666666666661''; delete from public.profiles where id = ''66666666-6666-4666-8666-666666666662''; delete from auth.users where id = ''66666666-6666-4666-8666-666666666662'';')$$,

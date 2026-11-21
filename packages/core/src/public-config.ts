@@ -21,6 +21,8 @@ function readConfig(env: NodeJS.ProcessEnv): PublicCfg {
     if (rootDomain !== "barber.workloop.com.br") throw new Error("ROOT_DOMAIN");
     if (schemeValue !== "https") throw new Error("PUBLIC_SCHEME");
     if (port !== "") throw new Error("PUBLIC_PORT");
+    const routeSecret = env[["BC", "ROUTE", "SECRET"].join("_")] ?? "";
+    if (!building && routeSecret.length < 32) throw new Error("BC_ROUTE_SECRET");
   }
   if (!rootDomain) throw new Error("ROOT_DOMAIN");
   return { appEnv, rootDomain, scheme: schemeValue, port };

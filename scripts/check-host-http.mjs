@@ -62,6 +62,7 @@ for (const item of cases) {
   if (response.status === 404 && (response.body.includes("inativo") || response.body.includes("suspenso"))) {
     problems.push("404 vazou estado");
   }
+  if (leaksInternal(response)) problems.push("vazou header interno");
   const label = `${item.host ?? "(sem host)"} ${item.path}`;
   if (problems.length) {
     failed += 1;
@@ -69,6 +70,10 @@ for (const item of cases) {
   } else {
     console.log(`${label} ${response.status}${response.location ? ` ${response.location}` : ""}`);
   }
+}
+
+function leaksInternal(response) {
+  return /x-bc-|x-middleware-request-/i.test(response.head);
 }
 
 function signature(response) {
@@ -133,6 +138,7 @@ for (const item of matrix) {
   if (response.location.startsWith("//") || (response.location.includes("://") && !response.location.startsWith(`https://ativo.${B}/`))) {
     problems.push(`location externo ${response.location}`);
   }
+  if (leaksInternal(response)) problems.push("vazou header interno");
   if (problems.length) {
     failed += 1;
     console.error(`ativo ${item.path}: ${problems.join("; ")}`);

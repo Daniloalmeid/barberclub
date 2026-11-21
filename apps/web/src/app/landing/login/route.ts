@@ -1,7 +1,7 @@
 import { LOGIN_FAILURE_MESSAGE, NONE_TENANT_MESSAGE, loadConfig, originOf, safeNextPath } from "@barberclub/core";
 import { NextResponse } from "next/server";
 import { escapeHtml } from "@/server/html";
-import { chooseTenant, continueSession, signIn, verifyTotp, type LoginOutcome } from "@/server/login-flow";
+import { chooseTenant, clientIp, confirmEnroll, continueSession, signIn, verifyTotp, type LoginOutcome } from "@/server/login-flow";
 import { cookieOptions, createJarClient, readCookieHeader, type PendingCookie } from "@/server/supabase";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,14 @@ function form(next: string, totp: boolean): string {
 }
 
 function render(outcome: LoginOutcome, next: string): NextResponse {
+  if (outcome.type === "limit") return page("<p>Muitas tentativas. Tente de novo mais tarde.</p>", 429);
   if (outcome.type === "fail") return page(`<p>${LOGIN_FAILURE_MESSAGE}</p>${form(next, false)}`);
+  if (outcome.type === "owner-blocked") {
+    return page("<p>A conta de dono exige o autenticador. Não foi possível cadastrá-lo.</p>");
+  }
+  if (outcome.type === "enroll") {
+    return page(`<p>Cadastre o autenticador. A conta de dono não entra sem ele.</p><form method="post" action="/login"><input type="hidden" name="acao" value="cadastrar"><input type="hidden" name="fator" value="${escapeHtml(outcome.factorId)}"><input type="hidden" name="next" value="${escapeHtml(next)}"><code data-secret="${escapeHtml(outcome.secret)}">${escapeHtml(outcome.secret)}</code><label>Código<input name="totp" inputmode="numeric" autocomplete="one-time-code"></label><button type="submit">Cadastrar</button></form>`);
+  }
   if (outcome.type === "mfa") return page(form(next, true));
   if (outcome.type === "none") {
     return page(`<p>${NONE_TENANT_MESSAGE}</p><form method="post" action="/login"><input type="hidden" name="acao" value="sair"><button type="submit">Sair</button></form>`);
@@ -66,7 +73,7 @@ function finish(response: NextResponse, outcome: LoginOutcome, changed: PendingC
 
 function originAllowed(request: Request): boolean {
   const origin = request.headers.get("origin");
-  if (!origin) return true;
+  if (!origin) return false;
   const cfg = loadConfig();
   return origin === originOf(cfg, cfg.rootDomain);
 }
@@ -86,6 +93,7 @@ export async function POST(request: Request) {
   const formData = await request.formData();
   const next = safeNextPath(formData.get("next"));
   const action = String(formData.get("acao") ?? "");
+  const ip = clientIp(request.headers.get("x-forwarded-for"));
   const jar = createJarClient(readCookieHeader(request.headers.get("cookie")));
   if (action === "sair") {
     await jar.client.auth.signOut({ scope: "local" });
@@ -97,12 +105,14 @@ export async function POST(request: Request) {
   }
   let outcome: LoginOutcome;
   if (action === "escolher") outcome = await chooseTenant(jar.client, String(formData.get("slug") ?? ""), next);
-  else if (action === "totp") outcome = await verifyTotp(jar.client, String(formData.get("totp") ?? ""), next);
-  else {
+  else if (action === "totp") outcome = await verifyTotp(jar.client, String(formData.get("totp") ?? ""), next, ip);
+  else if (action === "cadastrar") {
+    outcome = await confirmEnroll(jar.client, String(formData.get("fator") ?? ""), String(formData.get("totp") ?? ""), next, ip);
+  } else {
     const email = String(formData.get("email") ?? "");
     const password = String(formData.get("password") ?? "");
     const totp = String(formData.get("totp") ?? "");
-    outcome = !email || !password ? { type: "fail" } : await signIn(jar.client, email, password, totp, next);
+    outcome = !email || !password ? { type: "fail" } : await signIn(jar.client, email, password, totp, next, ip);
   }
   return finish(render(outcome, next ?? ""), outcome, jar.changed, [...jar.jar.keys()]);
 }

@@ -159,10 +159,16 @@ docker run --name "barberclub-dump-$$" --network host \
   -v /var/backups/barberclub:/dump \
   postgres:17 \
   pg_dump -Fc \
+    --exclude-table-data=private.login_handoffs \
     -n public -n private -n ledger -n public_api -n server_api \
     -f "/dump/pre-deploy-${GIT_COMMIT}.dump"
 docker rm -f "barberclub-dump-$$" >/dev/null 2>&1 || true
 test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}.dump" || exit 1
+if docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
+  pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}.dump" | grep -F 'TABLE DATA private login_handoffs'; then
+  echo "dump inclui dados de login_handoffs" >&2
+  exit 1
+fi
 expected="$(BARBERCLUB_PG_ENV_FILE=/run/secrets/backup-reader.pgpass \
   scripts/psql-from-env-file.sh -tA -c \
   "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname in ('public','private','ledger','public_api','server_api') and c.relkind = 'r'")"

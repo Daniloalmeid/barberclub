@@ -9,8 +9,12 @@ A fonte é `docs/m4-arquitetura.md`, seções 2.6 e 12. Este arquivo não copia 
 | H3 | O mesmo diagnóstico como passo 1 da M2, com a contagem no log. Papel `backup_reader`, `PGOPTIONS='-c default_transaction_read_only=on'`, sem `--single-transaction`. |
 | H4 | Rascunho de Termos e Privacidade. Não bloqueia a M4. |
 | H5 | Checklist de 6 passos a cada tenant novo, até a fase 2. |
-| H6 | No processo da imagem, antes do tráfego: `APP_ENV=production`, `ROOT_DOMAIN=barber.workloop.com.br`, `PUBLIC_SCHEME=https`, `PUBLIC_PORT` vazio, `HANDOFF_KEY`, `REVALIDATE_SECRET`, `BC_ROUTE_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Sem `APP_ENV` com `NODE_ENV=production`, ou sem `ROOT_DOMAIN`, o processo não serve. |
+| H6 | No processo da imagem, antes do tráfego: `APP_ENV=production`, `ROOT_DOMAIN=barber.workloop.com.br`, `PUBLIC_SCHEME=https`, `PUBLIC_PORT` vazio, `HANDOFF_KEY`, `REVALIDATE_SECRET`, `BC_ROUTE_SECRET` (mínimo de 32 caracteres), `CRON_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Sem `APP_ENV` com `NODE_ENV=production`, sem `ROOT_DOMAIN` ou com `BC_ROUTE_SECRET` curto, o processo não serve. |
 | H7 | Na porta 80, antes de anunciar o domínio: `curl -sI --resolve xyz.barber.workloop.com.br:80:127.0.0.1 http://xyz.barber.workloop.com.br/`. O status é 308 e o `Location` começa com `https://`. O SNI entra pelo `--resolve`, não por um Host solto em `https://127.0.0.1`. |
 | H8 | Rollback do router: reponha o arquivo dinâmico anterior do Traefik (a cópia feita antes da troca) e recarregue. Não apague certificado. O domínio só é anunciado depois do H7. |
 
 O Danilo cria `contato@workloop.com.br` antes de a landing ir ao ar e autoriza a migration e o diagnóstico. A M4 não mexe em VPS, DNS, Traefik, Supabase Cloud nem tokens.
+
+O Hermes agenda, uma vez por dia, `POST https://barber.workloop.com.br/api/cron/handoffs` com o header `x-cron-secret` igual a `CRON_SECRET`. O agendamento é cron da VPS ou n8n. A aplicação não dispara sozinha. No `backup-daily.sh` da VPS, o `pg_dump` leva `--exclude-table-data=private.login_handoffs`. Este repositório não altera esse script.
+
+O `config.toml` do repositório só vale para o Supabase local. No GoTrue self-hosted de produção o Hermes liga o TOTP com `GOTRUE_MFA_TOTP_ENROLL_ENABLED=true` e `GOTRUE_MFA_TOTP_VERIFY_ENABLED=true`. Sem isso o dono não chega a AAL2.

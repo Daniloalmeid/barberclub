@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { isReservedSlug } from "@barberclub/config/reserved";
 import { isSlugShape } from "@barberclub/config/slug";
 import { loadConfig, originOf, safeNextPath, tenantUrl } from "@barberclub/core";
@@ -27,18 +27,24 @@ function rest(name: string): string {
   return `${url.replace(/\/$/, "")}/rest/v1/rpc/${name}`;
 }
 
-export function sealSession(session: SealedSession): Buffer {
+export function handoffAad(userId: string, code: string): Buffer {
+  return Buffer.from(`${userId}\n${createHash("sha256").update(code).digest("hex")}`);
+}
+
+export function sealSession(session: SealedSession, aad: Buffer): Buffer {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key(), iv);
+  cipher.setAAD(aad);
   const body = Buffer.concat([cipher.update(JSON.stringify(session), "utf8"), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), body]);
 }
 
-export function openSession(payload: Buffer): SealedSession {
+export function openSession(payload: Buffer, aad: Buffer): SealedSession {
   const iv = payload.subarray(0, 12);
   const tag = payload.subarray(12, 28);
   const body = payload.subarray(28);
   const decipher = createDecipheriv("aes-256-gcm", key(), iv);
+  decipher.setAAD(aad);
   decipher.setAuthTag(tag);
   const json = Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
   const parsed = JSON.parse(json) as SealedSession;
@@ -74,7 +80,7 @@ export async function createHandoff(input: {
       p_slug: input.slug,
       p_next: nextPath,
       p_code: code,
-      p_sealed: `\\x${sealSession(input.session).toString("hex")}`,
+      p_sealed: `\\x${sealSession(input.session, handoffAad(input.userId, code)).toString("hex")}`,
     }),
     cache: "no-store",
   });
@@ -104,8 +110,12 @@ export async function consumeHandoff(
   if (rows.length !== 1) return null;
   const row = rows[0] as { user_id?: unknown; next_path?: unknown; sealed?: unknown };
   if (typeof row.user_id !== "string") return null;
-  const session = openSession(decodeBytea(row.sealed));
-  return { userId: row.user_id, nextPath: safeNextPath(row.next_path) ?? "/", session };
+  try {
+    const session = openSession(decodeBytea(row.sealed), handoffAad(row.user_id, code));
+    return { userId: row.user_id, nextPath: safeNextPath(row.next_path) ?? "/", session };
+  } catch {
+    return null;
+  }
 }
 
 export function loginUrl(): string {
