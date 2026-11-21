@@ -7,6 +7,7 @@ type Ids = {
   tenant: string;
   service: string;
   owner: string;
+  owner2: string;
   customers: string[];
   users: string[];
   staff: string[];
@@ -203,12 +204,36 @@ async function setup(): Promise<Ids> {
       (select array_agg(user_id order by user_id) from cust) as users,
       (select array_agg(id order by display_name) from staff) as staff
   `);
-  await admin.end();
   const ids = created.rows[0];
   if (!ids?.tenant || !ids.service || !ids.owner || ids.users.length < 2 || ids.staff.length < 5) {
     throw new Error("fixture de concorrência incompleta");
   }
-  return ids;
+  const second = await admin.query<{ id: string }>(
+    `with u as (
+       insert into auth.users (
+         instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+         raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+         confirmation_token, recovery_token, email_change_token_new, email_change
+       ) values (
+         '00000000-0000-0000-0000-000000000000', gen_random_uuid(), 'authenticated', 'authenticated',
+         'c9.${tag}@example.test', extensions.crypt('password', extensions.gen_salt('bf')), now(),
+         '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, now(), now(), '', '', '', ''
+       )
+       returning id
+     ),
+     prof as (
+       insert into public.profiles (id, full_name)
+       select id, 'c9' from u
+     )
+     insert into public.memberships (tenant_id, user_id, role, status)
+     select $1, u.id, 'owner', 'active' from u
+     returning user_id as id`,
+    [ids.tenant],
+  );
+  await admin.end();
+  const owner2 = second.rows[0]?.id;
+  if (!owner2) throw new Error("fixture sem o segundo owner");
+  return { ...ids, owner2 };
 }
 
 function slot(dayOffset: number, hour: number, minute = 0) {
@@ -616,6 +641,42 @@ async function deadlocks() {
   return Number(result.rows[0]?.deadlocks ?? "0");
 }
 
+async function asAal2(client: Client, userId: string) {
+  await client.query("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
+  await client.query(
+    "select set_config('request.jwt.claims', json_build_object('sub', $1::uuid, 'role', 'authenticated', 'aal', 'aal2')::text, true)",
+    [userId],
+  );
+  await client.query("set local role authenticated");
+}
+
+async function c09(ids: Ids) {
+  const a = await connect();
+  const b = await connect();
+  try {
+    await a.query("begin");
+    await b.query("begin");
+    await asAal2(a, ids.owner);
+    await asAal2(b, ids.owner2);
+    const left = finish(
+      a,
+      a.query("select public_api.change_member_role($1, $2, 'staff')", [ids.tenant, ids.owner2]),
+    );
+    const right = finish(
+      b,
+      b.query("select public_api.change_member_role($1, $2, 'staff')", [ids.tenant, ids.owner]),
+    );
+    const [first, second] = await Promise.all([left, right]);
+    for (const outcome of [first, second]) {
+      if (outcome.ok) throw new Error("C09 alterou um owner");
+      if (pgCode(outcome.error) === "40P01") throw new Error("C09 deadlock");
+      if (pgCode(outcome.error) !== "42501") throw outcome.error;
+    }
+  } finally {
+    await Promise.all([a.end(), b.end()]);
+  }
+}
+
 async function main() {
   const before = await deadlocks();
   const ids = await setup();
@@ -629,11 +690,12 @@ async function main() {
     await c06(ids, round);
     await c07(ids, round);
     await c08(ids, round);
+    await c09(ids);
     console.log(`rodada ${round + 1}/${rounds} ok`);
   }
   const after = await deadlocks();
   if (after > before) throw new Error(`deadlocks subiram de ${before} para ${after}`);
-  console.log(`C01–C08 x ${rounds} ok; deadlocks ${before} -> ${after}`);
+  console.log(`C01–C09 x ${rounds} ok; deadlocks ${before} -> ${after}`);
 }
 
 main().catch((error: unknown) => {
