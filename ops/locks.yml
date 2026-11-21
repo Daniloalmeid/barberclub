@@ -57,6 +57,7 @@ tasks:
     paths:
       - supabase/migrations/20261123100000_m2_invites.sql
       - supabase/tests/pgtap/m2_suite.sql
+      - supabase/tests/concurrency/run.ts
       - docs/decisoes-m2.md
       - ops/locks.yml
 
