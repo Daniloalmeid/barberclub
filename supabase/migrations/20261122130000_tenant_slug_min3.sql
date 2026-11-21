@@ -1,14 +1,13 @@
--- Slug de 3 a 32 caracteres. Conta os fora da regra e aborta só com a contagem.
--- Não renomeia nem apaga. Reversão no comentário de docs/m4-arquitetura.md §2.3.
-set local lock_timeout = '5s';
-set local statement_timeout = '60s';
-
-lock table public.tenants in access exclusive mode;
-
+-- Slug de 3 a 32 caracteres. Um único bloco: o CLI do Supabase não abre transação,
+-- e LOCK TABLE fora de transação falha. Não renomeia nem apaga.
+-- Reversão no comentário de docs/m4-arquitetura.md §2.3.
 do $$
 declare
   v_fora bigint;
 begin
+  perform set_config('lock_timeout', '5s', true);
+  perform set_config('statement_timeout', '60s', true);
+  lock table public.tenants in access exclusive mode;
   select count(*) into v_fora
     from public.tenants
    where not (slug ~ '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$' and position('--' in slug) = 0);
@@ -17,12 +16,11 @@ begin
       using errcode = '23514',
             hint = 'Rode a query de diagnóstico read-only do doc M4 §2.3; corrija os slugs com autorização do Danilo e reaplique.';
   end if;
+  alter table public.tenants
+    drop constraint tenants_slug_shape,
+    add constraint tenants_slug_shape check (
+      slug ~ '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+      and position('--' in slug) = 0
+    );
 end
 $$;
-
-alter table public.tenants
-  drop constraint tenants_slug_shape,
-  add constraint tenants_slug_shape check (
-    slug ~ '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
-    and position('--' in slug) = 0
-  );
