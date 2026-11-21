@@ -1,7 +1,21 @@
 const encoder = new TextEncoder();
-const nonceBytes = new Uint8Array(16);
-crypto.getRandomValues(nonceBytes);
-const processNonce = [...nonceBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+function envValue(name: string): string {
+  return process.env[name] ?? "";
+}
+
+function loadNonce(): string {
+  const nodeEnv = envValue("NODE_ENV");
+  const appEnv = envValue("APP_ENV") || "development";
+  const fixed = envValue("BC_ROUTE_NONCE");
+  const development = nodeEnv !== "production" && appEnv === "development";
+  if (development && /^[0-9a-f]{32}$/.test(fixed)) return fixed;
+  const nonceBytes = new Uint8Array(16);
+  crypto.getRandomValues(nonceBytes);
+  return [...nonceBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const processNonce = loadNonce();
 
 let cachedKey: CryptoKey | null = null;
 let cachedSecret = "";

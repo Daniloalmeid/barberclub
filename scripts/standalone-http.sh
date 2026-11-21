@@ -22,6 +22,18 @@ standalone_prepare() {
   rm -rf "$dest/apps/web/.next/static" "$dest/apps/web/public"
   cp -a "$app/.next/static" "$dest/apps/web/.next/static"
   cp -a "$app/public" "$dest/apps/web/public"
+  if [[ "${BC_DEV_NONCE:-}" == "1" ]]; then
+    python3 - "$dest/apps/web/server.js" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "process.env.NODE_ENV = 'production'"
+new = "process.env.NODE_ENV = process.env.NODE_ENV || 'production'"
+if old not in text:
+    raise SystemExit("harness: server.js nao fixa NODE_ENV")
+path.write_text(text.replace(old, new, 1))
+PY
+  fi
   printf '%s\n' "$dest"
 }
 
@@ -56,7 +68,7 @@ standalone_start() {
   STANDALONE_DIR="$(standalone_prepare "$root")"
   (
     cd "$STANDALONE_DIR"
-    exec node apps/web/server.js
+    exec node -r "$root/apps/web/absolute-form.cjs" apps/web/server.js
   ) >"$log" 2>&1 &
 }
 

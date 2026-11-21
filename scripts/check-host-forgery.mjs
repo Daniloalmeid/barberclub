@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import net from "node:net";
 import tls from "node:tls";
 
@@ -6,14 +7,35 @@ const port = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? 3471);
 const B = "barber.workloop.com.br";
 const ativo = `ativo.${B}`;
 const trial = `trial1.${B}`;
+const rewritePath = "/tenant/x";
+const nonce = process.env.BC_ROUTE_NONCE ?? "";
+const secret = process.env.BC_ROUTE_SECRET ?? "";
 
-function request(host, path, extra = "", method = "GET") {
+function seal(pathname, host) {
+  return createHmac("sha256", secret).update(`${nonce}\n${host}\n${pathname}`).digest("hex");
+}
+
+function decode(buffer, head) {
+  if (!/transfer-encoding:\s*chunked/i.test(head)) return buffer.toString("utf8");
+  const out = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    const lineEnd = buffer.indexOf("\r\n", offset);
+    if (lineEnd === -1) break;
+    const size = Number.parseInt(buffer.slice(offset, lineEnd).toString("utf8").split(";")[0], 16);
+    if (!Number.isFinite(size) || size === 0) break;
+    out.push(buffer.slice(lineEnd + 2, lineEnd + 2 + size));
+    offset = lineEnd + 2 + size + 2;
+  }
+  return Buffer.concat(out).toString("utf8");
+}
+
+function request(host, path, extra = "", target = path) {
   return new Promise((resolve, reject) => {
     const transport = edge ? tls : net;
     const options = edge ? { host, port: 443, servername: host } : { host: "127.0.0.1", port };
     const sock = transport.connect(options, () => {
-      const hostLine = edge ? `Host: ${host}\r\n` : `Host: ${host}\r\n`;
-      sock.write(`${method} ${path} HTTP/1.1\r\n${hostLine}${extra}Connection: close\r\n\r\n`);
+      sock.write(`GET ${target} HTTP/1.1\r\nHost: ${host}\r\n${extra}Accept-Encoding: identity\r\nConnection: close\r\n\r\n`);
     });
     const chunks = [];
     sock.setTimeout(15000, () => {
@@ -23,10 +45,10 @@ function request(host, path, extra = "", method = "GET") {
     sock.on("data", (chunk) => chunks.push(chunk));
     sock.on("error", reject);
     sock.on("end", () => {
-      const text = Buffer.concat(chunks).toString("utf8");
-      const splitAt = text.indexOf("\r\n\r\n");
-      const head = splitAt === -1 ? text : text.slice(0, splitAt);
-      const body = splitAt === -1 ? "" : text.slice(splitAt + 4);
+      const buffer = Buffer.concat(chunks);
+      const splitAt = buffer.indexOf("\r\n\r\n");
+      const head = splitAt === -1 ? buffer.toString("utf8") : buffer.slice(0, splitAt).toString("utf8");
+      const body = splitAt === -1 ? "" : decode(buffer.slice(splitAt + 4), head);
       resolve({
         status: Number(head.split(" ")[1]),
         location: head.match(/^location:\s*(.*)$/im)?.[1]?.trim() ?? "",
@@ -59,18 +81,29 @@ const otherNeutral = await request(`ausente.${B}`, "/");
 const swapped = await request(ativo, "/", `x-bc-host: ${trial}\r\n`);
 report(1, "x-bc-host", same(swapped, ativoPage) && !swapped.body.includes("<h1>Trial"), `status=${swapped.status}`);
 
-let seal = "";
-if (!edge) {
-  const minted = await request(trial, "/__bc/probe?path=/tenant/trial1");
-  seal = minted.head.match(/^x-probe-seal:\s*(.*)$/im)?.[1]?.trim() ?? "";
+const ativoSeal = edge ? "" : seal(rewritePath, ativo);
+const reentryExtra = `x-bc-host: ${trial}\r\nx-bc-seal: ${ativoSeal || "ab".repeat(32)}\r\n`;
+let reentryOk = false;
+let reentryDetail = "";
+if (edge) {
+  const replay = await request(ativo, rewritePath, reentryExtra);
+  reentryOk = replay.status === 404 && !replay.body.includes("<h1>Trial");
+  reentryDetail = `status=${replay.status}`;
+} else {
+  const control = await request(`127.0.0.1:${port}`, rewritePath, `x-bc-host: ${ativo}\r\nx-bc-seal: ${ativoSeal}\r\n`);
+  const byIp = await request(`127.0.0.1:${port}`, rewritePath, reentryExtra);
+  const byName = await request(`localhost:${port}`, rewritePath, reentryExtra);
+  reentryOk =
+    same(control, ativoPage) &&
+    byIp.status === 404 &&
+    byName.status === 404 &&
+    byIp.body === neutral.body &&
+    byName.body === neutral.body &&
+    !byIp.body.includes("<h1>Trial") &&
+    !byName.body.includes("<h1>Trial");
+  reentryDetail = `controle=${control.status} ip=${byIp.status} local=${byName.status}`;
 }
-const portable = await request(ativo, "/", `x-bc-route: tenant:trial1\r\nx-bc-seal: ${seal || "forjado"}\r\n`);
-report(
-  2,
-  "selo portatil",
-  same(portable, ativoPage) && portable.body !== trialPage.body,
-  `status=${portable.status}`,
-);
+report(2, "reentrada", reentryOk, reentryDetail);
 
 report(
   3,
@@ -79,12 +112,13 @@ report(
   `status=${neutral.status}`,
 );
 
-const handoff = await request(ativo, "/auth/handoff?c=0000000000000000000000000000000000000000000000000000000000000000");
-const handoffAgain = await request(ativo, "/auth/handoff?c=0000000000000000000000000000000000000000000000000000000000000000");
+const handoffPath = "/auth/handoff?c=0000000000000000000000000000000000000000000000000000000000000000";
+const handoff = await request(ativo, handoffPath, `x-bc-host: ${trial}\r\n`);
+const handoffRef = await request(ativo, handoffPath);
 report(
   4,
-  "handoff invalido",
-  !sessionCookie(handoff) && handoff.status !== 200 && same(handoff, handoffAgain),
+  "handoff com x-bc-host",
+  !sessionCookie(handoff) && handoff.status !== 200 && same(handoff, handoffRef),
   `status=${handoff.status}`,
 );
 
@@ -108,8 +142,14 @@ report(
 const forwarded = await request(ativo, "/", `X-Forwarded-Host: ${trial}\r\n`);
 report(7, "X-Forwarded-Host", same(forwarded, ativoPage) && !forwarded.body.includes("<h1>Trial"), `status=${forwarded.status}`);
 
+if (!edge) {
+  const absolute = await request(ativo, "/", "", `http://${trial}/`);
+  const absoluteOk = (same(absolute, ativoPage) || (absolute.status === 404 && absolute.body === neutral.body)) && !absolute.body.includes("<h1>Trial");
+  report(8, "request-line absoluta", absoluteOk, `status=${absolute.status} location=${absolute.location || "-"}`);
+}
+
 if (failed) {
-  console.error(`forja=${7 - failed}/7`);
+  console.error(`forja=${(edge ? 7 : 8) - failed}/${edge ? 7 : 8}`);
   process.exit(1);
 }
-console.log("forja=7/7");
+console.log(`forja=${edge ? 7 : 8}/${edge ? 7 : 8}`);

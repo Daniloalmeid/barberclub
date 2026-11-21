@@ -120,6 +120,37 @@ if [[ "$handoff_code" == "200" ]] || grep -qi '^set-cookie: sb-' "$handoff_heade
   exit 1
 fi
 echo "smoke handoff x-bc-host ${handoff_code}"
+probe_file="$(mktemp)"
+probe_headers="$(mktemp)"
+probe_code="$(curl -s -D "$probe_headers" -o "$probe_file" -w '%{http_code}' -H "Host: barber.workloop.com.br" "http://127.0.0.1:${port}/__bc/probe")"
+probe_name="barberclub-smoke-probe-$$"
+probe_port="${SMOKE_PROBE_PORT:-3459}"
+docker run -d --name "$probe_name" -p "127.0.0.1:${probe_port}:3000" -e BC_FORGERY_PROBE=1 "${prod_env[@]}" "$image" >/dev/null
+probe_flag_file="$(mktemp)"
+probe_flag_headers="$(mktemp)"
+probe_flag_code="000"
+probe_flag_deadline=$((SECONDS + 20))
+while (( SECONDS < probe_flag_deadline )); do
+  probe_flag_code="$(curl -s -D "$probe_flag_headers" -o "$probe_flag_file" -w '%{http_code}' -H "Host: barber.workloop.com.br" "http://127.0.0.1:${probe_port}/__bc/probe" || true)"
+  if [[ "$probe_flag_code" != "000" ]]; then
+    break
+  fi
+  sleep 1
+done
+docker rm -f "$probe_name" >/dev/null 2>&1 || true
+echo "smoke /__bc/probe ${probe_code} com flag ${probe_flag_code}"
+if [[ "$probe_code" != "404" || "$probe_flag_code" != "404" ]]; then
+  echo "smoke: /__bc/probe esperado 404 neutro" >&2
+  exit 1
+fi
+if ! grep -q "Página não encontrada" "$probe_file" || ! grep -q "Página não encontrada" "$probe_flag_file"; then
+  echo "smoke: /__bc/probe não é o 404 neutro" >&2
+  exit 1
+fi
+if grep -qi '^x-probe-seal:' "$probe_headers" || grep -qi '^x-probe-seal:' "$probe_flag_headers"; then
+  echo "smoke: /__bc/probe devolveu selo" >&2
+  exit 1
+fi
 if docker logs "$name" 2>&1 | grep -F 'does not work with "output: standalone"' >/dev/null; then
   echo "smoke: a imagem avisou que next start não serve com output standalone" >&2
   exit 1

@@ -86,19 +86,13 @@ function continueClean(request: NextRequest): NextResponse {
   return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
 }
 
-const NOT_FOUND_HTML =
-  '<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="noindex"><title>Página não encontrada</title></head><body><main><p>Página não encontrada.</p></main></body></html>';
-
-function plain404(): NextResponse {
-  return withCommonHeaders(
-    new NextResponse(NOT_FOUND_HTML, {
-      status: 404,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
-      },
-    }),
-  );
+async function localNeutral(request: NextRequest): Promise<NextResponse> {
+  const url = request.nextUrl.clone();
+  url.pathname = "/__bc/404";
+  url.search = "";
+  const headers = withoutClientMarks(request.headers);
+  headers.set("x-bc-seal", await routeSeal("/__bc/404", mintHost(request)));
+  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
 }
 
 function continueSealed(request: NextRequest, host: string): NextResponse {
@@ -232,26 +226,19 @@ export async function middleware(request: NextRequest) {
   const named = canonicalHost(host, cfg.rootDomain);
   if (needsSlash && named) return redirectCanonical(fixed, named);
 
-  if (process.env.BC_FORGERY_PROBE === "1" && pathname === "/__bc/probe") {
-    const mint = request.nextUrl.searchParams.get("path") ?? "";
-    const host = mintHost(request);
-    if (!mint.startsWith("/") || mint.includes("\\") || mint.includes("\n") || !host || isLocalHop(host)) return badPath();
-    return new NextResponse(null, {
-      status: 204,
-      headers: { "x-probe-seal": await routeSeal(mint, host), "x-probe-host": host, "cache-control": "no-store" },
-    });
-  }
-
   if (isPassthrough(path)) return continueClean(request);
   if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
     const real = mintHost(request);
     if (!isLocalHop(real)) return neutral404(request);
-    const carried = normalizeHost(request.headers.get("x-bc-host") ?? "");
     const presented = request.headers.get("x-bc-seal") ?? "";
-    if (!carried || isLocalHop(carried)) return plain404();
-    const expected = await routeSeal(pathname, carried);
-    if (!sealsEqual(presented, expected)) return plain404();
-    return continueSealed(request, carried);
+    const carried = normalizeHost(request.headers.get("x-bc-host") ?? "");
+    if (carried && !isLocalHop(carried)) {
+      const expected = await routeSeal(pathname, carried);
+      if (!sealsEqual(presented, expected)) return localNeutral(request);
+      return continueSealed(request, carried);
+    }
+    if (pathname === "/__bc/404" && sealsEqual(presented, await routeSeal("/__bc/404", real))) return continueClean(request);
+    return localNeutral(request);
   }
 
   switch (host.kind) {

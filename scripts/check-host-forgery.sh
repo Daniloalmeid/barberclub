@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sete casos de forja de host. Sai 0 só se os sete passarem.
+# Oito casos de forja de host. Sai 0 só se os oito passarem.
 # --edge: só GET HTTPS em *.barber.workloop.com.br, sem subir servidor.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,11 +16,14 @@ export PUBLIC_PORT=
 export SUPABASE_URL="http://127.0.0.1:3999"
 export SUPABASE_PUBLISHABLE_KEY="${SUPABASE_PUBLISHABLE_KEY:-stub}"
 export BC_ROUTE_SECRET="${BC_ROUTE_SECRET:-0123456789abcdef0123456789abcdef}"
-export BC_FORGERY_PROBE=1
+export BC_ROUTE_NONCE="${BC_ROUTE_NONCE:-0123456789abcdef0123456789abcdef}"
+export BC_DEV_NONCE=1
 log=/tmp/barberclub-next-forgery.log
 node "$root/scripts/stub-postgrest.mjs" >/tmp/barberclub-stub-forgery.log 2>&1 &
 stub=$!
 standalone_production_env "$port"
+export NODE_ENV=development
+export APP_ENV=development
 standalone_start "$root" "$log"
 web=$!
 cleanup() {
