@@ -6,7 +6,7 @@ const origin = "http://slug.barber.workloop.com.br";
 
 function call(path: string) {
   const url = path.startsWith("//") ? `${origin}${path}` : new URL(path, origin);
-  return middleware(new NextRequest(url));
+  return middleware(new NextRequest(url, { headers: { host: "barber.workloop.com.br" } }));
 }
 
 function canonicalTarget(response: Response) {

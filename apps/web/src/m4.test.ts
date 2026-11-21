@@ -1,0 +1,127 @@
+import { assertExternal } from "@barberclub/config/links";
+import { isReservedSlug } from "@barberclub/config/reserved";
+import { isSlugShape } from "@barberclub/config/slug";
+import {
+  classifyHost,
+  loadConfig,
+  parseRegularizationRow,
+  resolveLogin,
+  safeJoin,
+  safeNextPath,
+  tenantUrl,
+} from "@barberclub/core";
+import { NextRequest } from "next/server";
+import { describe, expect, it } from "vitest";
+import { middleware } from "./middleware";
+
+const root = "barber.workloop.com.br";
+process.env.APP_ENV = "production";
+process.env.ROOT_DOMAIN = root;
+process.env.PUBLIC_SCHEME = "https";
+process.env.PUBLIC_PORT = "";
+const cfg = loadConfig(process.env);
+
+function call(path: string, host = root) {
+  const request = new NextRequest(new URL(path, "http://slug.barber.workloop.com.br"), { headers: { host } });
+  return middleware(request);
+}
+
+describe("slug e reservados", () => {
+  it.each(["abc", "a1b", "123", "a-b", "minha-barbearia", "a".repeat(32)])("aceita %s", (value) => {
+    expect(isSlugShape(value)).toBe(true);
+  });
+  it.each(["a", "ab", "a".repeat(33), "-abc", "abc-", "a--b", "ab--cd", "xn--abc", "Abc", "ab_c", "ab.c", "ab c", "ção", ""])(
+    "rejeita %s",
+    (value) => {
+      expect(isSlugShape(value)).toBe(false);
+    },
+  );
+  it("reconhece reservado e prefixo", () => {
+    expect(isReservedSlug("www")).toBe(true);
+    expect(isReservedSlug("cdn-01")).toBe(true);
+    expect(isReservedSlug("barbearia-do-ze")).toBe(false);
+  });
+});
+
+describe("classifyHost", () => {
+  it("classifica o host base, o tenant e o desconhecido", () => {
+    expect(classifyHost(null, root)).toEqual({ kind: "bad" });
+    expect(classifyHost("a b.barber.workloop.com.br", root)).toEqual({ kind: "bad" });
+    expect(classifyHost("barber.workloop.com.br", root)).toEqual({ kind: "base" });
+    expect(classifyHost("www.barber.workloop.com.br", root)).toEqual({ kind: "redirect", host: root });
+    expect(classifyHost("abc.barber.workloop.com.br", root)).toEqual({ kind: "tenant", slug: "abc" });
+    expect(classifyHost("abc.barber.workloop.com.br.", root)).toEqual({
+      kind: "redirect",
+      host: "abc.barber.workloop.com.br",
+    });
+    expect(classifyHost("app.barber.workloop.com.br", root)).toEqual({ kind: "special", name: "app" });
+    expect(classifyHost("a.b.barber.workloop.com.br", root)).toEqual({ kind: "unknown" });
+    expect(classifyHost("127.0.0.1", root)).toEqual({ kind: "unknown" });
+    expect(classifyHost("evil.com", root)).toEqual({ kind: "unknown" });
+    expect(classifyHost("localhost:3000", "localhost")).toEqual({ kind: "base" });
+    expect(classifyHost("abc.localhost:3000", "localhost")).toEqual({ kind: "tenant", slug: "abc" });
+  });
+});
+
+describe("safeNextPath e tenantUrl", () => {
+  it("aceita path relativo canônico", () => {
+    expect(safeNextPath("/agendar?d=2026-11-21")).toBe("/agendar?d=2026-11-21");
+    expect(safeNextPath("https://evil.com")).toBeNull();
+    expect(safeNextPath("/login")).toBeNull();
+    expect(safeNextPath("/x/")).toBeNull();
+  });
+  it("monta a URL do tenant só com o slug aprovado", () => {
+    expect(tenantUrl("abc", "/x", cfg)).toBe("https://abc.barber.workloop.com.br/x");
+    expect(() => tenantUrl("abc", "//evil.com", cfg)).toThrow();
+    expect(() => tenantUrl("api", "/", cfg)).toThrow();
+  });
+});
+
+describe("resolveLogin", () => {
+  const a = { slug: "ativo", displayName: "Ativo" };
+  const b = { slug: "trial1", displayName: "Trial" };
+  const pending = { slug: "suspenso", displayName: "Suspenso", status: "suspended" };
+  it("escolhe nenhum, regularização, handoff ou lista", () => {
+    expect(resolveLogin([], [])).toEqual({ kind: "none" });
+    expect(resolveLogin([], [pending])).toEqual({ kind: "redirect", location: "/login/regularizar" });
+    expect(resolveLogin([a], [])).toEqual({ kind: "handoff", slug: "ativo" });
+    expect(resolveLogin([a], [pending])).toEqual({ kind: "choose", items: [a], pending: true });
+    expect(resolveLogin([a, b], [])).toEqual({ kind: "choose", items: [a, b], pending: false });
+  });
+  it("rejeita coluna extra na regularização", () => {
+    expect(() => parseRegularizationRow({ slug: "a", display_name: "A", status: "suspended", reason_code: "x", action_code: "y", extra: "z" })).toThrow();
+  });
+});
+
+describe("middleware de host", () => {
+  it("mantém o 400 de path antes do host", async () => {
+    const response = call("/..;x/", "naoexiste.barber.workloop.com.br");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "bad_path" });
+  });
+  it("redireciona www e a barra num salto", () => {
+    const response = call("/foo/?a=1", "www.barber.workloop.com.br");
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("https://barber.workloop.com.br/foo?a=1");
+  });
+  it("rejeita host malformado", async () => {
+    const response = call("/", "a b.barber.workloop.com.br");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "bad_host" });
+  });
+  it("não deixa o rewrite sair do prefixo", () => {
+    for (let i = 0; i < 200; i += 1) {
+      const noise = `/${"a".repeat(i % 8)}`;
+      const joined = safeJoin("/tenant/abc", noise);
+      expect(joined === null || joined.startsWith("/tenant/abc")).toBe(true);
+    }
+  });
+});
+
+describe("links externos", () => {
+  it("recusa placeholder e host parecido", () => {
+    expect(() => assertExternal("https://wa.me/⟦numero⟧")).toThrow();
+    expect(() => assertExternal("https://wa.me.evil.com/1")).toThrow();
+    expect(() => assertExternal("https://user@wa.me/1")).toThrow();
+  });
+});

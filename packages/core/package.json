@@ -2,6 +2,9 @@
   "name": "@barberclub/core",
   "version": "0.0.0",
   "private": true,
+  "dependencies": {
+    "@barberclub/config": "workspace:*"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

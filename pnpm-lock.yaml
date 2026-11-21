@@ -90,7 +90,11 @@ importers:
 
   packages/config: {}
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      '@barberclub/config':
+        specifier: workspace:*
+        version: link:../config
 
   packages/db: {}
 

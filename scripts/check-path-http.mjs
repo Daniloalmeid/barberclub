@@ -1,7 +1,7 @@
 import net from "node:net";
 
 const port = Number(process.argv[2] ?? process.env.PATH_HTTP_PORT ?? 3456);
-const hostHeader = "slug.barber.workloop.com.br";
+const hostHeader = "barber.workloop.com.br";
 
 function raw(path) {
   return new Promise((resolve, reject) => {

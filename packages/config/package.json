@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./slug": "./src/slug.ts",
+    "./reserved": "./src/reserved.ts",
+    "./links": "./src/links.ts"
   },
   "scripts": {
     "lint": "tsc -p tsconfig.json --noEmit",

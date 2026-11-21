@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 
 const text = readFileSync("ops/locks.yml", "utf8");
-const required = ["version:", "m1-fundacao", "backup-daily.sh", "traefik-drift-check.sh", "traefik-window.md", "backup.env.example"];
+const required = ["version:", "m1-fundacao", "m4-tenant-host", "backup-daily.sh", "traefik-drift-check.sh", "traefik-window.md", "backup.env.example"];
 for (const piece of required) {
   if (!text.includes(piece)) {
     console.error(`ops/locks.yml sem ${piece}`);
