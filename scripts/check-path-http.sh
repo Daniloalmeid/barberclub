@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Sobe o next start do build e confere os paths com HTTP cru (sem normalizar no cliente).
+# Sobe o servidor standalone do build e confere os paths com HTTP cru.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/standalone-http.sh
+source "$root/scripts/standalone-http.sh"
 port="${PATH_HTTP_PORT:-3456}"
 export APP_ENV="${APP_ENV:-production}"
 export ROOT_DOMAIN="${ROOT_DOMAIN:-barber.workloop.com.br}"
 export PUBLIC_SCHEME="${PUBLIC_SCHEME:-https}"
-export PUBLIC_PORT="${PUBLIC_PORT:-}"
+export PUBLIC_PORT="${PUBLIC_PORT-}"
 export BC_ROUTE_SECRET="${BC_ROUTE_SECRET:-0123456789abcdef0123456789abcdef}"
-cd "$root/apps/web"
-pnpm exec next start -p "$port" >/tmp/barberclub-next-start.log 2>&1 &
+log=/tmp/barberclub-next-start.log
+standalone_production_env "$port"
+standalone_start "$root" "$log"
 pid=$!
 cleanup() {
   kill "$pid" >/dev/null 2>&1 || true
@@ -36,9 +39,14 @@ for _ in $(seq 1 40); do
   sleep 0.5
 done
 if [[ "$ready" != "1" ]]; then
-  echo "check-path-http: o next start não ficou pronto" >&2
-  cat /tmp/barberclub-next-start.log >&2 || true
+  echo "check-path-http: o servidor standalone não ficou pronto" >&2
+  cat "$log" >&2 || true
   exit 1
 fi
 
+set +e
 node "$root/scripts/check-path-http.mjs" "$port"
+code=$?
+set -e
+standalone_finish "$log" "$code"
+exit 0
