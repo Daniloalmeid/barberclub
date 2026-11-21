@@ -17,6 +17,7 @@ pid=$!
 cleanup() {
   kill "$pid" >/dev/null 2>&1 || true
   wait "$pid" 2>/dev/null || true
+  standalone_cleanup
 }
 trap cleanup EXIT
 

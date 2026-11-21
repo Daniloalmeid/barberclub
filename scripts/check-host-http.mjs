@@ -161,6 +161,13 @@ if (liveMarked.status !== 200 || !liveMarked.body.includes('"status":"ok"')) {
 } else {
   console.log("x-bc-host forjado nao chega em /api/health/live");
 }
+const internalMarked = await raw("/api/internal/revalidate", `ativo.${B}`, `x-bc-host: trial1.${B}\r\n`, "POST");
+if (internalMarked.status !== 404 || signature(internalMarked) !== baseline || internalMarked.body.includes("Trial")) {
+  failed += 1;
+  console.error(`x-bc-host em /api/internal: status ${internalMarked.status} body ${internalMarked.body.slice(0, 180)}`);
+} else {
+  console.log("x-bc-host em /api/internal serve o 404 do ativo");
+}
 const cronMarked = await raw("/api/cron/handoffs", `ativo.${B}`, `x-bc-host: ${B}\r\n`, "POST");
 if (cronMarked.status !== 404) {
   failed += 1;

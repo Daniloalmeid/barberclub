@@ -133,6 +133,14 @@ describe("middleware de host", () => {
     const response = await middleware(request);
     expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
   });
+  it("em /api/internal o x-bc-host do cliente não troca o host do ativo", async () => {
+    const request = new NextRequest(new URL("/api/internal/revalidate", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },
+    });
+    const response = await middleware(request);
+    expect(response.headers.get("x-middleware-rewrite") ?? "").toContain("/__bc/404");
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
+  });
   it("não repassa x-bc-host no passthrough de /api", async () => {
     const request = new NextRequest(new URL("/api/health/live", "http://slug.barber.workloop.com.br"), {
       headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },

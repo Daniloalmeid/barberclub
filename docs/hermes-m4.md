@@ -26,6 +26,22 @@ O `config.toml` do repositório só vale para o Supabase local. No GoTrue self-h
 
 A rede do Traefik no deploy é `easypanel`. Não é `easypanel-workloop`.
 
-Uma regra mista `Host(...) || HostRegexp(...)` pode não emitir certificado. O padrão é um router por host explícito, `barber.workloop.com.br` e `www.barber.workloop.com.br`, cada um com `certResolver`, e um router `HostRegexp` separado, de prioridade menor, só encaminhando. A regex é `^.+[.]barber[.]workloop[.]com[.]br$`: o ponto entra como classe, o que evita o problema de escape da barra no YAML.
+O que vale no deploy é este adendo, não a regra mista do YAML em `docs/m4-arquitetura.md` §2.6. Esse YAML e o H1 continuam descrevendo o desenho aprovado: barra simples dentro de aspas simples e crases, se alguém copiar aquele bloco. A regra mista `Host(...) || HostRegexp(...)` pode não emitir certificado, então o Hermes não a publica.
 
-`docker service update` não aceita `--env-file`. Só `--env-add`. O deploy sincroniza todas as chaves do arquivo de ambiente, uma a uma, com `--env-add`. Não passa o arquivo no comando e não deixa chave do arquivo de fora.
+No deploy há um router explícito para cada um de `app`, `admin`, `barber.workloop.com.br` e `www`, com `certResolver` e prioridade 101. O router `HostRegexp` fica separado, com `tls: {}` sem `certResolver` e prioridade 100, só encaminhando. A regex, entre crases, é `^.+[.]barber[.]workloop[.]com[.]br$`. O ponto entra como classe. Num label de Compose, `$` vira `$$`, então o fim da regex no label é `$$`.
+
+## Adendo M4.2
+
+`docker service update` não aceita `--env-file`. `--env-add` coloca o valor no argv e no histórico do shell. O arquivo de ambiente fica modo 600. Um script, sem `set -x`, lê esse arquivo e monta o array. Chave que saiu do arquivo entra com `--env-rm`. O EasyPanel pode sobrescrever, no próximo save da tela, o que foi aplicado à mão.
+
+```bash
+umask 077
+set +x
+args=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  case "$line" in ''|\#*) continue ;; esac
+  args+=(--env-add "$line")
+done < /caminho/ambiente
+args+=(--env-rm CHAVE_REMOVIDA)
+docker service update "${args[@]}" NOME_DO_SERVICO
+```
