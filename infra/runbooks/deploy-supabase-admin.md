@@ -159,10 +159,10 @@ docker rm -f "barberclub-dump-$$" >/dev/null 2>&1 || true
 test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}.dump" || exit 1
 docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
   pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}.dump" \
-  | scripts/count-dump-tables.sh 28 || exit 1
+  | scripts/count-dump-tables.sh 32 || exit 1
 ```
 
-As 28 tabelas são as 25 de `public` (`admin_cases`, `appointments`, `audit_log`, `customers`, `memberships`, `outbox_events`, `payments`, `plans`, `platform_admins`, `profiles`, `rate_limits`, `refund_requests`, `refunds`, `services`, `staff`, `staff_busy`, `staff_services`, `subscriptions`, `tenant_branding`, `tenant_domains`, `tenant_settings`, `tenants`, `time_off`, `webhook_events`, `work_schedules`) e as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`). O diretório não é o corrente.
+As 32 tabelas são as 28 de `public` (as 25 da M1 mais `reserved_slugs`, `reserved_slug_prefixes` e `tenant_slug_history`), as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`) e `private.login_handoffs`. O diretório não é o corrente.
 
 Depois do passo 4, um segundo dump só das tabelas de `auth` que o grant libera:
 
