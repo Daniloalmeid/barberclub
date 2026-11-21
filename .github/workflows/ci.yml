@@ -48,16 +48,7 @@ jobs:
           grant="$(docker exec -i -u postgres "$cid" psql -U postgres -d postgres -tA -c "select has_table_privilege('authenticated', 'public.services', 'select')::text")"
           test "$grant" = "true"
       - name: Contar tabelas do pg_restore --list
-        run: |
-          set -euo pipefail
-          cid="$(docker ps -qf name=supabase_db_ | head -1)"
-          docker exec -u postgres "$cid" pg_dump -h 127.0.0.1 -U backup_reader -d postgres -Fc \
-            -n public -n private -n ledger -n public_api -n server_api -f /tmp/schemas.dump
-          docker exec -u postgres "$cid" pg_restore --list /tmp/schemas.dump | bash scripts/count-dump-tables.sh 28
-          docker exec -u postgres "$cid" pg_dump -h 127.0.0.1 -U backup_reader -d postgres -Fc \
-            -t auth.users -t auth.identities -f /tmp/auth.dump
-          docker exec -u postgres "$cid" pg_restore --list /tmp/auth.dump | bash scripts/count-dump-tables.sh 2
-          docker exec -u postgres "$cid" rm -f /tmp/schemas.dump /tmp/auth.dump
+        run: bash scripts/check-dump-counts.sh
       - name: Conferir policies e bucket do supabase_admin
         run: BARBERCLUB_VERIFY_LOCAL=1 bash scripts/verify-superuser-grants.sh
       - name: Provar que o verificador falha sem uma policy ou com OR true
