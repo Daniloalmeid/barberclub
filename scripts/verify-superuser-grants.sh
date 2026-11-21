@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Confere o passo do supabase_admin com papel de leitura (backup_reader).
-# A sessão que conecta não pode ser superusuário. Sai diferente de 0 e diz o que falta.
-# CI/local: docker exec + trust. Rede: BARBERCLUB_PG_ENV_FILE aponta um arquivo, nunca um DSN.
+# Confere o passo do supabase_admin entrando direto como backup_reader (LOGIN).
+# Não usa SET ROLE. Sai diferente de 0 e diz o que falta.
+# CI/local: TCP trust em 127.0.0.1. Rede: /run/secrets/backup-reader.env ou BARBERCLUB_PG_ENV_FILE.
 set -euo pipefail
 
 for arg in "$@"; do
@@ -21,9 +21,14 @@ note() {
 }
 
 query() {
-  local sql="$1"
+  local sql="$1" cred=""
   if [[ -n "${BARBERCLUB_PG_ENV_FILE:-}" ]]; then
-    BARBERCLUB_PGOPTIONS='-c role=backup_reader' \
+    cred="$BARBERCLUB_PG_ENV_FILE"
+  elif [[ -f /run/secrets/backup-reader.env ]]; then
+    cred=/run/secrets/backup-reader.env
+  fi
+  if [[ -n "$cred" ]]; then
+    BARBERCLUB_PG_ENV_FILE="$cred" \
       "$root/scripts/psql-from-env-file.sh" -tA -c "${sql}"
   else
     local cid
@@ -32,8 +37,8 @@ query() {
       echo "verify-superuser-grants: container do Postgres local não está no ar" >&2
       exit 1
     fi
-    docker exec -e PGOPTIONS='-c role=backup_reader' -i -u postgres "$cid" \
-      psql -U postgres -d postgres -v ON_ERROR_STOP=1 -tA -c "${sql}"
+    docker exec -i -u postgres "$cid" \
+      psql -h 127.0.0.1 -U backup_reader -d postgres -v ON_ERROR_STOP=1 -tA -c "${sql}"
   fi
 }
 
@@ -47,10 +52,11 @@ if [[ "$reader" != "backup_reader" ]]; then
   note "a checagem não rodou como backup_reader (current_user=${reader})"
 fi
 
-expected=$'tenant_objects_delete=DELETE\ntenant_objects_insert=INSERT\ntenant_objects_select=SELECT\ntenant_objects_update=UPDATE'
-got="$(query "select policyname || '=' || cmd from pg_policies where schemaname = 'storage' and tablename = 'objects' order by policyname")"
+# Só as quatro policies nomeadas. Outras policies de storage.objects (outro bucket no Cloud) não entram na conta.
+expected=$'tenant_objects_delete|DELETE|{authenticated}|true|false\ntenant_objects_insert|INSERT|{authenticated}|false|true\ntenant_objects_select|SELECT|{authenticated}|true|false\ntenant_objects_update|UPDATE|{authenticated}|true|true'
+got="$(query "select policyname || '|' || cmd || '|' || roles::text || '|' || (coalesce(qual, '') like '%tenant-files%')::text || '|' || (coalesce(with_check, '') like '%tenant-files%')::text from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname in ('tenant_objects_delete', 'tenant_objects_insert', 'tenant_objects_select', 'tenant_objects_update') order by policyname")"
 if [[ "$got" != "$expected" ]]; then
-  note "policies de storage.objects divergiram"
+  note "policies nomeadas de tenant-files divergiram"
   note "esperado:"
   note "$expected"
   note "encontrado:"
@@ -58,7 +64,10 @@ if [[ "$got" != "$expected" ]]; then
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     if [[ "$got" != *"$line"* ]]; then
-      note "falta: $line"
+      name="${line%%|*}"
+      cmd="${line#*|}"
+      cmd="${cmd%%|*}"
+      note "falta: ${name}=${cmd}"
     fi
   done <<< "$expected"
 fi

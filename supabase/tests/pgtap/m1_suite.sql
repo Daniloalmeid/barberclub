@@ -1321,14 +1321,17 @@ select lives_ok(
 );
 select lives_ok($$select extensions.dblink_disconnect('fkchk')$$, 'fecha a sessao da FK');
 
-select is(
-  (select coalesce(array_agg(pol.polname order by pol.polname), '{}')
-     from pg_policy pol
-     join pg_class c on c.oid = pol.polrelid
-     join pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'storage' and c.relname = 'objects'),
-  array['tenant_objects_delete', 'tenant_objects_insert', 'tenant_objects_select', 'tenant_objects_update']::name[],
-  'storage.objects tem exatamente as 4 policies do tenant'
+select ok(
+  (select count(*) from pg_policies p
+    where p.schemaname = 'storage'
+      and p.tablename = 'objects'
+      and (
+        (p.policyname = 'tenant_objects_select' and p.cmd = 'SELECT' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check is null)
+        or (p.policyname = 'tenant_objects_insert' and p.cmd = 'INSERT' and p.roles::text = '{authenticated}' and p.qual is null and p.with_check like '%tenant-files%')
+        or (p.policyname = 'tenant_objects_update' and p.cmd = 'UPDATE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check like '%tenant-files%')
+        or (p.policyname = 'tenant_objects_delete' and p.cmd = 'DELETE' and p.roles::text = '{authenticated}' and p.qual like '%tenant-files%' and p.with_check is null)
+      )) = 4,
+  'as 4 policies tenant-files para authenticated'
 );
 select ok(
   exists (
