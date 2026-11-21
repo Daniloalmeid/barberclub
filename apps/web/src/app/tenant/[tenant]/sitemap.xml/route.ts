@@ -1,4 +1,5 @@
 import { classifyHost, loadConfig } from "@barberclub/core";
+import { forwardedHost } from "@/server/request-host";
 import { tenantSitemap } from "@/server/seo";
 import { getTenantPublic } from "@/server/tenant-public";
 
@@ -9,7 +10,7 @@ export async function GET(request: Request) {
   if (cfg.appEnv !== "production") {
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
   }
-  const host = classifyHost(request.headers.get("host"), cfg.rootDomain);
+  const host = classifyHost(forwardedHost(request.headers), cfg.rootDomain);
   if (host.kind !== "tenant") {
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
   }

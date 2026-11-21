@@ -1,6 +1,7 @@
 import { isReservedSlug } from "@barberclub/config/reserved";
 import { isSlugShape } from "@barberclub/config/slug";
 import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
+import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
 import { getTenantPublic, UpstreamError } from "@/server/tenant-public";
 
@@ -34,7 +35,7 @@ function unavailable(): Response {
 export async function GET(request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
   const { path } = await context.params;
   const cfg = loadConfig();
-  const host = classifyHost(request.headers.get("host"), cfg.rootDomain);
+  const host = classifyHost(forwardedHost(request.headers), cfg.rootDomain);
   if (host.kind !== "tenant") return neutral();
   const slug = host.slug;
   if (!isSlugShape(slug) || isReservedSlug(slug)) return neutral();

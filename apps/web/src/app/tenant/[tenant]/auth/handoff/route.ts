@@ -1,4 +1,5 @@
 import { classifyHost, loadConfig, originOf, safeNextPath } from "@barberclub/core";
+import { forwardedHost } from "@/server/request-host";
 import { NextResponse } from "next/server";
 import { consumeHandoff, loginUrl } from "@/server/handoff";
 import { ownerAccount } from "@/server/login-flow";
@@ -32,7 +33,7 @@ function refused(): NextResponse {
 
 export async function GET(request: Request) {
   const cfg = loadConfig();
-  const host = classifyHost(request.headers.get("host"), cfg.rootDomain);
+  const host = classifyHost(forwardedHost(request.headers), cfg.rootDomain);
   if (host.kind !== "tenant") return missing();
   try {
     const row = await getTenantPublic(host.slug);

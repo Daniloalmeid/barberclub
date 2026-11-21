@@ -21,3 +21,11 @@ O Hermes agenda, uma vez por dia, `POST https://barber.workloop.com.br/api/cron/
 Quem montar o n8n do revalidate chama `POST https://barber.workloop.com.br/api/internal/revalidate` no host base. Os headers são `x-revalidate-timestamp` e `x-revalidate-signature` (hex de HMAC-SHA256 de `REVALIDATE_SECRET` sobre `timestamp.corpo`). `X-BC-Timestamp` e `X-BC-Signature` não servem: o middleware descarta `x-bc-*`.
 
 O `config.toml` do repositório só vale para o Supabase local. No GoTrue self-hosted de produção o Hermes liga o TOTP com `GOTRUE_MFA_TOTP_ENROLL_ENABLED=true` e `GOTRUE_MFA_TOTP_VERIFY_ENABLED=true`. Sem isso o dono não chega a AAL2.
+
+## Adendo M4.1
+
+A rede do Traefik no deploy é `easypanel`. Não é `easypanel-workloop`.
+
+Uma regra mista `Host(...) || HostRegexp(...)` pode não emitir certificado. O padrão é um router por host explícito, `barber.workloop.com.br` e `www.barber.workloop.com.br`, cada um com `certResolver`, e um router `HostRegexp` separado, de prioridade menor, só encaminhando. A regex é `^.+[.]barber[.]workloop[.]com[.]br$`: o ponto entra como classe, o que evita o problema de escape da barra no YAML.
+
+`docker service update` não aceita `--env-file`. Só `--env-add`. O deploy sincroniza todas as chaves do arquivo de ambiente, uma a uma, com `--env-add`. Não passa o arquivo no comando e não deixa chave do arquivo de fora.

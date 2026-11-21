@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Login, TOTP, handoff e cookie contra o Supabase local e o next start.
+# Login, TOTP, handoff e cookie contra o Supabase local e o servidor standalone.
 # A saída não imprime chave. Os segredos ficam só no ambiente do processo.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/standalone-http.sh
+source "$root/scripts/standalone-http.sh"
 port="${LOGIN_HTTP_PORT:-3461}"
 status="$(mktemp)"
 chmod 600 "$status"
@@ -44,8 +46,9 @@ if [[ "$ready_auth" != "1" ]]; then
   echo "check-login-http: o auth não voltou depois do restart" >&2
   exit 1
 fi
-cd "$root/apps/web"
-pnpm exec next start -p "$port" >/tmp/barberclub-next-login.log 2>&1 &
+log=/tmp/barberclub-next-login.log
+standalone_production_env "$port"
+standalone_start "$root" "$log"
 web=$!
 cleanup() {
   kill "$web" >/dev/null 2>&1 || true
@@ -54,17 +57,21 @@ cleanup() {
 trap cleanup EXIT
 for _ in $(seq 1 40); do
   if curl -fsS -H "Host: barber.workloop.com.br" "http://127.0.0.1:${port}/api/health/live" >/dev/null; then
-    if node "$root/scripts/check-login-http.mjs" "$port"; then
-      exit 0
+    set +e
+    node "$root/scripts/check-login-http.mjs" "$port"
+    code=$?
+    set -e
+    if [[ "$code" != "0" ]]; then
+      auth="$(docker ps -qf name=supabase_auth_ | head -1)"
+      if [[ -n "$auth" ]]; then
+        docker logs --tail 40 "$auth" 2>&1 | grep -E 'error finding user|Scan error|querying schema' | tail -20 >&2 || true
+      fi
     fi
-    auth="$(docker ps -qf name=supabase_auth_ | head -1)"
-    if [[ -n "$auth" ]]; then
-      docker logs --tail 40 "$auth" 2>&1 | grep -E 'error finding user|Scan error|querying schema' | tail -20 >&2 || true
-    fi
-    exit 1
+    standalone_finish "$log" "$code"
+    exit 0
   fi
   sleep 0.5
 done
 echo "check-login-http: servidor não ficou pronto" >&2
-cat /tmp/barberclub-next-login.log >&2 || true
+cat "$log" >&2 || true
 exit 1
