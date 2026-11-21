@@ -69,7 +69,9 @@ function attachNonce(headers: Headers): string {
 function withCommonHeaders(response: NextResponse, nonce?: string): NextResponse {
   const value = nonce ?? newNonce();
   response.headers.set("content-security-policy", contentSecurityPolicy(value));
-  response.headers.set("x-nonce", value);
+  // x-nonce NÃO vai na resposta: o navegador lê o nonce do próprio CSP. Devolvê-lo
+  // num header só aumenta a diferença entre duas respostas iguais, e a D7 promete
+  // 404 idêntico para host inexistente, inativo, inválido e reservado.
   if ((process.env.APP_ENV ?? "development") !== "production") {
     response.headers.set("x-robots-tag", "noindex, nofollow");
   }

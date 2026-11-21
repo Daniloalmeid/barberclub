@@ -82,6 +82,11 @@ function signature(response) {
     .slice(1)
     .map((line) => line.trim())
     .filter((line) => line && !/^date:/i.test(line))
+    // A CSP carrega um nonce por requisição, e é isso que impede a página de sair em
+    // branco: o Next precisa do nonce para executar o bootstrap inline. Um nonce que
+    // se repete deixaria de ser nonce. Então aqui a comparação do 404 neutro é feita
+    // em tudo, menos nesse header — o resto tem de ser byte a byte igual entre hosts.
+    .filter((line) => !/^content-security-policy:/i.test(line))
     .map((line) => line.toLowerCase())
     .sort();
   return `${response.status}\n${headers.join("\n")}\n${response.body}`;
