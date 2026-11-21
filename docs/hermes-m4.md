@@ -9,7 +9,7 @@ A fonte é `docs/m4-arquitetura.md`, seções 2.6 e 12. Este arquivo não copia 
 | H3 | O mesmo diagnóstico como passo 1 da M2, com a contagem no log. Papel `backup_reader`, `PGOPTIONS='-c default_transaction_read_only=on'`, sem `--single-transaction`. |
 | H4 | Rascunho de Termos e Privacidade. Não bloqueia a M4. |
 | H5 | Checklist de 6 passos a cada tenant novo, até a fase 2. |
-| H6 | No processo da imagem, antes do tráfego: `APP_ENV=production`, `ROOT_DOMAIN=barber.workloop.com.br`, `PUBLIC_SCHEME=https`, `PUBLIC_PORT` vazio, `HANDOFF_KEY`, `REVALIDATE_SECRET`, `BC_ROUTE_SECRET` (mínimo de 32 caracteres), `CRON_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Sem `APP_ENV` com `NODE_ENV=production`, sem `ROOT_DOMAIN` ou com `BC_ROUTE_SECRET` curto, o processo não serve. |
+| H6 | No processo da imagem, antes do tráfego: `APP_ENV=production`, `ROOT_DOMAIN=barber.workloop.com.br`, `PUBLIC_SCHEME=https`, `PUBLIC_PORT` vazio, `HANDOFF_KEY`, `REVALIDATE_SECRET`, `BC_ROUTE_SECRET` (mínimo de 32 caracteres), `CRON_SECRET`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Sem `APP_ENV` com `NODE_ENV=production`, sem `ROOT_DOMAIN` ou com `BC_ROUTE_SECRET` curto, o processo não serve. `/__bc/probe` não existe: com ou sem `BC_FORGERY_PROBE`, a imagem responde 404 neutro. Nonce fixo de teste só entra com `NODE_ENV` diferente de `production` e `APP_ENV=development`. |
 | H7 | Na porta 80, antes de anunciar o domínio: `curl -sI --resolve xyz.barber.workloop.com.br:80:127.0.0.1 http://xyz.barber.workloop.com.br/`. O status é 308 e o `Location` começa com `https://`. O SNI entra pelo `--resolve`, não por um Host solto em `https://127.0.0.1`. |
 | H8 | Rollback do router: reponha o arquivo dinâmico anterior do Traefik (a cópia feita antes da troca) e recarregue. Não apague certificado. O domínio só é anunciado depois do H7. |
 | H9 | O limite de login usa o último valor de `X-Forwarded-For`. Vale com o Traefik em modo host, não no ingress do Swarm. `barber.workloop.com.br` e `*.barber.workloop.com.br` ficam em DNS only na Cloudflare: proxy laranja entrega o IP da Cloudflare e quebra o limite. Se o proxy for ligado, a leitura passa para `CF-Connecting-IP` com `trustedIPs` no Traefik. A porta 3000 do app não é publicada fora da rede do Traefik. Traefik 3.7.19, com a correção da CVE-2026-29054. O Hermes confirma esses quatro pontos no deploy. |
@@ -26,6 +26,22 @@ O `config.toml` do repositório só vale para o Supabase local. No GoTrue self-h
 
 A rede do Traefik no deploy é `easypanel`. Não é `easypanel-workloop`.
 
-Uma regra mista `Host(...) || HostRegexp(...)` pode não emitir certificado. O padrão é um router por host explícito, `barber.workloop.com.br` e `www.barber.workloop.com.br`, cada um com `certResolver`, e um router `HostRegexp` separado, de prioridade menor, só encaminhando. A regex é `^.+[.]barber[.]workloop[.]com[.]br$`: o ponto entra como classe, o que evita o problema de escape da barra no YAML.
+O que vale no deploy é este adendo, não a regra mista do YAML em `docs/m4-arquitetura.md` §2.6. Esse YAML e o H1 continuam descrevendo o desenho aprovado: barra simples dentro de aspas simples e crases, se alguém copiar aquele bloco. A regra mista `Host(...) || HostRegexp(...)` pode não emitir certificado, então o Hermes não a publica.
 
-`docker service update` não aceita `--env-file`. Só `--env-add`. O deploy sincroniza todas as chaves do arquivo de ambiente, uma a uma, com `--env-add`. Não passa o arquivo no comando e não deixa chave do arquivo de fora.
+No deploy há um router explícito para cada um de `app`, `admin`, `barber.workloop.com.br` e `www`, com `certResolver` e prioridade 101. O router `HostRegexp` fica separado, com `tls: {}` sem `certResolver` e prioridade 100, só encaminhando. A regex, entre crases, é `^.+[.]barber[.]workloop[.]com[.]br$`. O ponto entra como classe. Num label de Compose, `$` vira `$$`, então o fim da regex no label é `$$`.
+
+## Adendo M4.2
+
+`docker service update` não aceita `--env-file`. `--env-add` coloca o valor no argv e no histórico do shell. O arquivo de ambiente fica modo 600. Um script, sem `set -x`, lê esse arquivo e monta o array. Chave que saiu do arquivo entra com `--env-rm`. O EasyPanel pode sobrescrever, no próximo save da tela, o que foi aplicado à mão.
+
+```bash
+umask 077
+set +x
+args=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  case "$line" in ''|\#*) continue ;; esac
+  args+=(--env-add "$line")
+done < /caminho/ambiente
+args+=(--env-rm CHAVE_REMOVIDA)
+docker service update "${args[@]}" NOME_DO_SERVICO
+```

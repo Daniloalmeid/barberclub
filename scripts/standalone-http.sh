@@ -8,14 +8,39 @@ standalone_prepare() {
   local root="$1"
   local app="$root/apps/web"
   local stand="$app/.next/standalone"
+  local dest=""
   if [[ ! -f "$stand/apps/web/server.js" ]]; then
     echo "harness: falta ${stand}/apps/web/server.js. Rode pnpm --filter web build." >&2
     return 1
   fi
-  mkdir -p "$stand/apps/web/.next"
-  rm -rf "$stand/apps/web/.next/static" "$stand/apps/web/public"
-  cp -a "$app/.next/static" "$stand/apps/web/.next/static"
-  cp -a "$app/public" "$stand/apps/web/public"
+  dest="$(mktemp -d /tmp/barberclub-standalone.XXXXXX)"
+  if ! cp -a "$stand/." "$dest/"; then
+    rm -rf "$dest"
+    return 1
+  fi
+  mkdir -p "$dest/apps/web/.next"
+  rm -rf "$dest/apps/web/.next/static" "$dest/apps/web/public"
+  cp -a "$app/.next/static" "$dest/apps/web/.next/static"
+  cp -a "$app/public" "$dest/apps/web/public"
+  if [[ "${BC_DEV_NONCE:-}" == "1" ]]; then
+    python3 - "$dest/apps/web/server.js" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "process.env.NODE_ENV = 'production'"
+new = "process.env.NODE_ENV = process.env.NODE_ENV || 'production'"
+if old not in text:
+    raise SystemExit("harness: server.js nao fixa NODE_ENV")
+path.write_text(text.replace(old, new, 1))
+PY
+  fi
+  printf '%s\n' "$dest"
+}
+
+standalone_cleanup() {
+  case "${STANDALONE_DIR:-}" in
+    /tmp/barberclub-standalone.*) rm -rf "$STANDALONE_DIR" ;;
+  esac
 }
 
 standalone_production_env() {
@@ -40,10 +65,10 @@ standalone_production_env() {
 standalone_start() {
   local root="$1"
   local log="$2"
-  standalone_prepare "$root"
+  STANDALONE_DIR="$(standalone_prepare "$root")"
   (
-    cd "$root/apps/web"
-    exec node .next/standalone/apps/web/server.js
+    cd "$STANDALONE_DIR"
+    exec node -r "$root/scripts/absolute-form.cjs" apps/web/server.js
   ) >"$log" 2>&1 &
 }
 

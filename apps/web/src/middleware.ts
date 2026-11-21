@@ -83,9 +83,21 @@ function redirectCanonical(location: string | null, hostName: string) {
 }
 
 function continueClean(request: NextRequest): NextResponse {
+  return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers: withoutClientMarks(request.headers) } })));
+}
+
+async function localNeutral(request: NextRequest): Promise<NextResponse> {
+  const url = request.nextUrl.clone();
+  url.pathname = "/__bc/404";
+  url.search = "";
   const headers = withoutClientMarks(request.headers);
-  const marked = request.headers.get("x-bc-host");
-  if (marked) headers.set("x-bc-host", marked);
+  headers.set("x-bc-seal", await routeSeal("/__bc/404", mintHost(request)));
+  return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
+}
+
+function continueSealed(request: NextRequest, host: string): NextResponse {
+  const headers = withoutClientMarks(request.headers);
+  headers.set("x-bc-host", host);
   return hideInternalMarks(withCommonHeaders(NextResponse.next({ request: { headers } })));
 }
 
@@ -96,14 +108,35 @@ function hideInternalMarks(response: NextResponse): NextResponse {
   return response;
 }
 
-function sealHost(request: NextRequest): string {
-  return request.headers.get("x-bc-host") || request.headers.get("host") || "";
+function rawHost(request: NextRequest): string {
+  return request.headers.get("host") ?? "";
+}
+
+function normalizeHost(raw: string): string {
+  let value = raw.trim().toLowerCase();
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    return end === -1 ? "" : value.slice(0, end + 1);
+  }
+  value = value.replace(/\s+/g, "");
+  value = value.replace(/:\d+$/, "");
+  if (value.endsWith(".")) value = value.slice(0, -1);
+  return value;
+}
+
+function isLocalHop(raw: string): boolean {
+  const name = normalizeHost(raw).replace(/:\d+$/, "");
+  return name === "localhost" || name === "127.0.0.1";
+}
+
+function mintHost(request: NextRequest): string {
+  return normalizeHost(rawHost(request));
 }
 
 async function rewrite(request: NextRequest, url: URL): Promise<NextResponse> {
   const headers = withoutClientMarks(request.headers);
-  const host = sealHost(request);
-  headers.set("x-bc-host", host);
+  const host = mintHost(request);
+  if (host && !isLocalHop(host)) headers.set("x-bc-host", host);
   headers.set("x-bc-seal", await routeSeal(url.pathname, host));
   return hideInternalMarks(withCommonHeaders(NextResponse.rewrite(url, { request: { headers } })));
 }
@@ -195,10 +228,17 @@ export async function middleware(request: NextRequest) {
 
   if (isPassthrough(path)) return continueClean(request);
   if (pathname === "/__bc/404" || /^\/(landing|tenant)(\/|$)/i.test(pathname)) {
-    const expected = await routeSeal(pathname, sealHost(request));
+    const real = mintHost(request);
+    if (!isLocalHop(real)) return neutral404(request);
     const presented = request.headers.get("x-bc-seal") ?? "";
-    if (sealsEqual(presented, expected)) return continueClean(request);
-    return neutral404(request);
+    const carried = normalizeHost(request.headers.get("x-bc-host") ?? "");
+    if (carried && !isLocalHop(carried)) {
+      const expected = await routeSeal(pathname, carried);
+      if (!sealsEqual(presented, expected)) return localNeutral(request);
+      return continueSealed(request, carried);
+    }
+    if (pathname === "/__bc/404" && sealsEqual(presented, await routeSeal("/__bc/404", real))) return continueClean(request);
+    return localNeutral(request);
   }
 
   switch (host.kind) {

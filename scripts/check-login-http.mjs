@@ -413,6 +413,31 @@ try {
   `);
   const cross = await raw("GET", `/auth/handoff?c=${crossCode}`, `trial1.${B}`);
   check(cross.status === 303 && cross.location === `https://${B}/login`, "handoff de A recusado em B", cross.location);
+  const forgedHostCode = randomBytes(32).toString("hex");
+  psql(`
+    insert into private.login_handoffs (code_hash, user_id, tenant_id, next_path, sealed, expires_at)
+    values (
+      extensions.digest('${forgedHostCode}', 'sha256'),
+      '${u1}',
+      '${ids.trial1}',
+      '/',
+      decode('${seal({ access_token: plantedSession.access_token, refresh_token: plantedSession.refresh_token }, u1, forgedHostCode)}', 'hex'),
+      now() + interval '40 seconds'
+    );
+  `);
+  const forgedHost = await raw("GET", `/auth/handoff?c=${forgedHostCode}`, `ativo.${B}`, {
+    headers: `x-bc-host: trial1.${B}\r\n`,
+  });
+  const sessionCookie = forgedHost.setCookie.some((line) => /^sb-/i.test(line) && !/max-age=0/i.test(line));
+  check(
+    forgedHost.status === 303 && new URL(forgedHost.location, `https://${B}`).pathname === "/login" && !sessionCookie,
+    "handoff de trial1 no ativo com x-bc-host forjado e recusado",
+    `${forgedHost.status} ${forgedHost.location}`,
+  );
+  check(
+    sqlValue(`select used_at is null from private.login_handoffs where code_hash = extensions.digest('${forgedHostCode}', 'sha256')`) === "t",
+    "o codigo de trial1 nao foi consumido no ativo",
+  );
   check(cross.cache.toLowerCase().includes("no-store") && cross.referrer.toLowerCase() === "no-referrer", "handoff sem cache e sem referrer");
 
   const suspendedHandoff = await raw("GET", `/auth/handoff?c=${"ab".repeat(32)}`, `suspenso.${B}`);

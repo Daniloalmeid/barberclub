@@ -3,12 +3,12 @@ import net from "node:net";
 const port = Number(process.argv[2] ?? 3456);
 const B = "barber.workloop.com.br";
 
-function raw(path, host, extra = "") {
+function raw(path, host, extra = "", method = "GET") {
   return new Promise((resolve, reject) => {
     const sock = net.connect(port, "127.0.0.1", () => {
       const hostLine = host == null ? "" : `Host: ${host}\r\n`;
       const version = host == null ? "HTTP/1.0" : "HTTP/1.1";
-      sock.write(`GET ${path} ${version}\r\n${hostLine}${extra}Connection: close\r\n\r\n`);
+      sock.write(`${method} ${path} ${version}\r\n${hostLine}${extra}Connection: close\r\n\r\n`);
     });
     const chunks = [];
     sock.setTimeout(8000, () => {
@@ -145,6 +145,35 @@ for (const item of matrix) {
   } else {
     console.log(`ativo ${item.path} ${response.status}`);
   }
+}
+
+const swapped = await raw("/", `ativo.${B}`, `x-bc-host: trial1.${B}\r\n`);
+if (swapped.status !== 200 || !swapped.body.includes("<h1>Ativo</h1>") || swapped.body.includes("<h1>Trial") || swapped.body.includes("Trial Um")) {
+  failed += 1;
+  console.error(`x-bc-host do cliente: status ${swapped.status} body ${swapped.body.slice(0, 180)}`);
+} else {
+  console.log("x-bc-host do cliente nao troca o tenant");
+}
+const liveMarked = await raw("/api/health/live", `ativo.${B}`, `x-bc-host: trial1.${B}\r\n`);
+if (liveMarked.status !== 200 || !liveMarked.body.includes('"status":"ok"')) {
+  failed += 1;
+  console.error(`x-bc-host em /api/health/live: status ${liveMarked.status} body ${liveMarked.body.slice(0, 120)}`);
+} else {
+  console.log("x-bc-host forjado nao chega em /api/health/live");
+}
+const internalMarked = await raw("/api/internal/revalidate", `ativo.${B}`, `x-bc-host: trial1.${B}\r\n`, "POST");
+if (internalMarked.status !== 404 || signature(internalMarked) !== baseline || internalMarked.body.includes("Trial")) {
+  failed += 1;
+  console.error(`x-bc-host em /api/internal: status ${internalMarked.status} body ${internalMarked.body.slice(0, 180)}`);
+} else {
+  console.log("x-bc-host em /api/internal serve o 404 do ativo");
+}
+const cronMarked = await raw("/api/cron/handoffs", `ativo.${B}`, `x-bc-host: ${B}\r\n`, "POST");
+if (cronMarked.status !== 404) {
+  failed += 1;
+  console.error(`x-bc-host em /api/cron: status ${cronMarked.status}`);
+} else {
+  console.log("x-bc-host forjado nao torna /api/cron o host base");
 }
 
 const forged = await raw("/tenant/trial1", `ativo.${B}`, "x-bc-route: tenant:trial1\r\nx-bc-seal: forjado\r\n");

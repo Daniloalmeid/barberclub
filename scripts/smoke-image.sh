@@ -58,8 +58,28 @@ if [[ "$secret_code" == "200" || "$secret_code" == "000" ]]; then
   echo "smoke: sem BC_ROUTE_SECRET o /api/health/live veio ${secret_code}, esperado falha" >&2
   exit 1
 fi
-docker run -d --name "$name" -p "127.0.0.1:${port}:3000" "${prod_env[@]}" "$image" >/dev/null
+root="$(cd "$(dirname "$0")/.." && pwd)"
+stub_port="${SMOKE_STUB_PORT:-3998}"
+STUB_HOST=0.0.0.0 STUB_PORT="$stub_port" node "$root/scripts/stub-postgrest.mjs" >/tmp/barberclub-smoke-stub.log 2>&1 &
+stub=$!
+stub_ready=0
+stub_deadline=$((SECONDS + 10))
+while (( SECONDS < stub_deadline )); do
+  if curl -fsS -o /dev/null -X POST -H "content-type: application/json" -d '{"p_slug":"ativo"}' "http://127.0.0.1:${stub_port}/rest/v1/rpc/get_tenant_public" 2>/dev/null; then
+    stub_ready=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$stub_ready" != "1" ]]; then
+  echo "smoke: stub PostgREST não subiu" >&2
+  kill "$stub" >/dev/null 2>&1 || true
+  exit 1
+fi
+docker run -d --name "$name" --add-host=host.docker.internal:host-gateway -p "127.0.0.1:${port}:3000" \
+  "${prod_env[@]}" -e "SUPABASE_URL=http://host.docker.internal:${stub_port}" "$image" >/dev/null
 cleanup() {
+  kill "$stub" >/dev/null 2>&1 || true
   docker logs "$name" >&2 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
 }
@@ -97,6 +117,62 @@ if ! cmp -s "$forged_trial" "$forged_ativo"; then
 fi
 if ! grep -q "Página não encontrada" "$forged_trial" || grep -q "<h1>Ativo</h1>\|<h1>Trial" "$forged_trial"; then
   echo "smoke: header forjado não é o 404 neutro" >&2
+  exit 1
+fi
+marked_file="$(mktemp)"
+plain_file="$(mktemp)"
+plain_code="$(curl -s -o "$plain_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
+marked_code="$(curl -s -o "$marked_file" -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/")"
+echo "smoke x-bc-host ativo ${plain_code} com header ${marked_code}"
+if [[ "$plain_code" != "200" ]] || ! grep -q "<h1>Ativo</h1>" "$plain_file"; then
+  echo "smoke: a página do ativo não veio 200 com o próprio conteúdo (${plain_code})" >&2
+  exit 1
+fi
+if [[ "$marked_code" != "200" ]] || ! cmp -s "$plain_file" "$marked_file" || grep -q "<h1>Trial" "$marked_file"; then
+  echo "smoke: x-bc-host do cliente mudou a página do ativo" >&2
+  exit 1
+fi
+live_marked="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/api/health/live")"
+if [[ "$live_marked" != "200" ]]; then
+  echo "smoke: x-bc-host chegou em /api/health/live (${live_marked})" >&2
+  exit 1
+fi
+handoff_headers="$(mktemp)"
+handoff_code="$(curl -s -D "$handoff_headers" -o /dev/null -w '%{http_code}' -H "Host: ativo.barber.workloop.com.br" -H "x-bc-host: trial1.barber.workloop.com.br" "http://127.0.0.1:${port}/auth/handoff?c=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")"
+if [[ "$handoff_code" == "200" ]] || grep -qi '^set-cookie: sb-' "$handoff_headers"; then
+  echo "smoke: handoff com x-bc-host forjado veio ${handoff_code}" >&2
+  exit 1
+fi
+echo "smoke handoff x-bc-host ${handoff_code}"
+probe_file="$(mktemp)"
+probe_headers="$(mktemp)"
+probe_code="$(curl -s -D "$probe_headers" -o "$probe_file" -w '%{http_code}' -H "Host: barber.workloop.com.br" "http://127.0.0.1:${port}/__bc/probe")"
+probe_name="barberclub-smoke-probe-$$"
+probe_port="${SMOKE_PROBE_PORT:-3459}"
+docker run -d --name "$probe_name" -p "127.0.0.1:${probe_port}:3000" -e BC_FORGERY_PROBE=1 "${prod_env[@]}" "$image" >/dev/null
+probe_flag_file="$(mktemp)"
+probe_flag_headers="$(mktemp)"
+probe_flag_code="000"
+probe_flag_deadline=$((SECONDS + 20))
+while (( SECONDS < probe_flag_deadline )); do
+  probe_flag_code="$(curl -s -D "$probe_flag_headers" -o "$probe_flag_file" -w '%{http_code}' -H "Host: barber.workloop.com.br" "http://127.0.0.1:${probe_port}/__bc/probe" || true)"
+  if [[ "$probe_flag_code" != "000" ]]; then
+    break
+  fi
+  sleep 1
+done
+docker rm -f "$probe_name" >/dev/null 2>&1 || true
+echo "smoke /__bc/probe ${probe_code} com flag ${probe_flag_code}"
+if [[ "$probe_code" != "404" || "$probe_flag_code" != "404" ]]; then
+  echo "smoke: /__bc/probe esperado 404 neutro" >&2
+  exit 1
+fi
+if ! grep -q "Página não encontrada" "$probe_file" || ! grep -q "Página não encontrada" "$probe_flag_file"; then
+  echo "smoke: /__bc/probe não é o 404 neutro" >&2
+  exit 1
+fi
+if grep -qi '^x-probe-seal:' "$probe_headers" || grep -qi '^x-probe-seal:' "$probe_flag_headers"; then
+  echo "smoke: /__bc/probe devolveu selo" >&2
   exit 1
 fi
 if docker logs "$name" 2>&1 | grep -F 'does not work with "output: standalone"' >/dev/null; then

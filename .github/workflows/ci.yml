@@ -28,6 +28,8 @@ jobs:
         run: bash scripts/check-path-http.sh
       - name: HTTP cru do host contra o build
         run: bash scripts/check-host-http.sh
+      - name: Forja de host contra o standalone
+        run: bash scripts/check-host-forgery.sh
 
   db:
     runs-on: ubuntu-latest

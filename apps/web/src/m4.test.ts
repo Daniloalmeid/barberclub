@@ -126,6 +126,37 @@ describe("middleware de host", () => {
     expect((response.headers.get("x-middleware-request-x-bc-seal") ?? "").length).toBeGreaterThan(16);
     expect(response.headers.get("x-middleware-request-x-bc-route")).toBeNull();
   });
+  it("normaliza o Host real sem porta e ignora a variação do x-bc-host", async () => {
+    const request = new NextRequest(new URL("/robots.txt", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `Ativo.${root}:443`, "x-bc-host": ` TRIAL1.${root}:443 ` },
+    });
+    const response = await middleware(request);
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
+  });
+  it("assina o selo com o Host real e não com o x-bc-host do cliente", async () => {
+    const request = new NextRequest(new URL("/robots.txt", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },
+    });
+    const response = await middleware(request);
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
+  });
+  it("em /api/internal o x-bc-host do cliente não troca o host do ativo", async () => {
+    const request = new NextRequest(new URL("/api/internal/revalidate", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },
+    });
+    const response = await middleware(request);
+    expect(response.headers.get("x-middleware-rewrite") ?? "").toContain("/__bc/404");
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBe(`ativo.${root}`);
+  });
+  it("não repassa x-bc-host no passthrough de /api", async () => {
+    const request = new NextRequest(new URL("/api/health/live", "http://slug.barber.workloop.com.br"), {
+      headers: { host: `ativo.${root}`, "x-bc-host": `trial1.${root}` },
+    });
+    const response = await middleware(request);
+    const override = (response.headers.get("x-middleware-override-headers") ?? "").toLowerCase();
+    expect(override.split(",")).not.toContain("x-bc-host");
+    expect(response.headers.get("x-middleware-request-x-bc-host")).toBeNull();
+  });
   it("responde 404 ao path interno com header forjado", async () => {
     const request = new NextRequest(new URL("/tenant/trial1", "http://slug.barber.workloop.com.br"), {
       headers: { host: `ativo.${root}`, "x-bc-route": "tenant:trial1", "x-bc-seal": "forjado" },

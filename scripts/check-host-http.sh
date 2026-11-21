@@ -20,6 +20,7 @@ web=$!
 cleanup() {
   kill "$web" "$stub" >/dev/null 2>&1 || true
   wait "$web" "$stub" 2>/dev/null || true
+  standalone_cleanup
 }
 trap cleanup EXIT
 for _ in $(seq 1 40); do
