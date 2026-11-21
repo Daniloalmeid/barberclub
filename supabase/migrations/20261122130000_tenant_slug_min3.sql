@@ -5,8 +5,7 @@ do $$
 declare
   v_fora bigint;
 begin
-  perform set_config('lock_timeout', '5s', true);
-  perform set_config('statement_timeout', '60s', true);
+  perform set_config('lock_timeout', '2s', true);
   lock table public.tenants in access exclusive mode;
   select count(*) into v_fora
     from public.tenants

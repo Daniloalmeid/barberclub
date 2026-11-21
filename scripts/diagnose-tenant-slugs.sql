@@ -1,5 +1,9 @@
 -- Diagnóstico read-only do passo 1 da M2. Não altera dados.
--- O Hermes roda, com autorização do Danilo, e registra só a contagem no log.
+-- O Hermes roda como backup_reader, com autorização do Danilo, e registra só a contagem.
+-- Sem --single-transaction: o arquivo já abre a transação read only.
+--   PGOPTIONS='-c default_transaction_read_only=on' \
+--   BARBERCLUB_PG_ENV_FILE=/etc/barberclub/backup-reader.pgpass \
+--   scripts/psql-from-env-file.sh scripts/diagnose-tenant-slugs.sql
 begin transaction read only;
 select count(*)                                                   as total,
        count(*) filter (where length(slug) < 3)                   as curtos,

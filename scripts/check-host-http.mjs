@@ -122,6 +122,8 @@ const matrix = [
   { path: "//evil.com/", status: 308, location: "/evil.com/" },
   { path: "/foo/%2e%2e/bar", status: 404 },
   { path: "/foo/../bar", status: 404 },
+  { path: "/", status: 200 },
+  { path: "/api/health/live", status: 200 },
 ];
 for (const item of matrix) {
   const response = await raw(item.path, `ativo.${B}`);
@@ -140,11 +142,18 @@ for (const item of matrix) {
 }
 
 const forged = await raw("/tenant/trial1", `ativo.${B}`, "x-bc-route: tenant:trial1\r\nx-bc-seal: forjado\r\n");
+const forgedAtivo = await raw("/tenant/ativo", `ativo.${B}`, "x-bc-route: tenant:ativo\r\n");
 if (forged.status !== 404 || signature(forged) !== baseline || forged.body.includes("<h1>Trial</h1>") || forged.body.includes("<h1>Ativo</h1>")) {
   failed += 1;
   console.error(`header forjado: status ${forged.status} location ${forged.location} body ${forged.body.slice(0, 180)}`);
 } else {
   console.log("header forjado 404 neutro");
+}
+if (forgedAtivo.status !== 404 || signature(forgedAtivo) !== baseline || forgedAtivo.body.includes("<h1>Ativo</h1>")) {
+  failed += 1;
+  console.error(`tenant/ativo forjado: status ${forgedAtivo.status}`);
+} else {
+  console.log("GET /tenant/ativo com x-bc-route forjado 404 neutro");
 }
 
 if (failed) process.exit(1);

@@ -1,5 +1,5 @@
 begin;
-select * from plan(58);
+select * from plan(63);
 
 create or replace function pg_temp.err(sql text, code text, descr text) returns text
 language plpgsql as $$
@@ -105,6 +105,11 @@ select is(
   'primeira consume devolve o usuario'
 );
 select is_empty($$select 1 from server_api.consume_login_handoff('ativo', 'consume-once')$$, 'segunda consume vem vazia');
+select is(
+  (select sealed from private.login_handoffs where code_hash = extensions.digest('consume-once', 'sha256')),
+  '\x'::bytea,
+  'consume zera o sealed'
+);
 
 insert into private.login_handoffs (code_hash, user_id, tenant_id, next_path, sealed, expires_at)
 values (
@@ -171,6 +176,10 @@ select is((select count(*) from public_api.my_login_tenants()), 0::bigint, 'owne
 select is((select count(*) from public_api.my_regularization_tenants()), 0::bigint, 'owner revoked ve zero na regularizacao');
 reset role;
 
+select table_privs_are('private', 'login_handoffs', 'anon', ARRAY[]::name[], 'anon sem privilegio em login_handoffs');
+select table_privs_are('private', 'login_handoffs', 'authenticated', ARRAY[]::name[], 'authenticated sem privilegio em login_handoffs');
+select table_privs_are('private', 'login_handoffs', 'service_role', ARRAY[]::name[], 'service_role sem privilegio em login_handoffs');
+select table_privs_are('private', 'login_handoffs', 'backup_reader', ARRAY['SELECT']::name[], 'backup_reader so select em login_handoffs');
 select ok(
   has_table_privilege('backup_reader', 'private.login_handoffs', 'select'),
   'backup_reader le a tabela para o pg_dump conseguir trava-la'

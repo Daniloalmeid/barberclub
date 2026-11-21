@@ -132,6 +132,13 @@ describe("middleware de host", () => {
   });
 });
 
+describe("loadConfig", () => {
+  it("recusa produção sem APP_ENV e sem ROOT_DOMAIN", () => {
+    expect(() => loadConfig({ NODE_ENV: "production" })).toThrow(/APP_ENV/);
+    expect(() => loadConfig({ NODE_ENV: "production", APP_ENV: "production" })).toThrow(/ROOT_DOMAIN/);
+  });
+});
+
 describe("links externos", () => {
   it("recusa placeholder e host parecido", () => {
     expect(() => assertExternal("https://wa.me/⟦numero⟧")).toThrow();

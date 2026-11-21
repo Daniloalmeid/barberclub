@@ -5,7 +5,10 @@ export type PublicCfg = {
   port: string;
 };
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicCfg {
+let booted: PublicCfg | undefined;
+
+function readConfig(env: NodeJS.ProcessEnv): PublicCfg {
+  if (env.NODE_ENV === "production" && !env.APP_ENV) throw new Error("APP_ENV");
   const appEnv = env.APP_ENV ?? "development";
   const rootDomain = env.ROOT_DOMAIN || (appEnv === "production" ? "" : "barber.workloop.com.br");
   const schemeValue = env.PUBLIC_SCHEME || (appEnv === "development" ? "http" : "https");
@@ -20,6 +23,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicCfg {
   }
   if (!rootDomain) throw new Error("ROOT_DOMAIN");
   return { appEnv, rootDomain, scheme: schemeValue, port };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicCfg {
+  if (env === process.env && booted) return booted;
+  const cfg = readConfig(env);
+  if (env === process.env) booted = cfg;
+  return cfg;
 }
 
 export function originOf(cfg: PublicCfg, host: string): string {

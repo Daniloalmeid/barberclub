@@ -60,7 +60,7 @@ Conexão: porta `5432` direta, ou o session pooler na porta `5432`. O transactio
 
 1. Congelar o deploy da imagem nova. Anotar no log o commit, `executor=hermes` e `autorizado=danilo`.
 2. Backup lógico, ou dispensa registrada. Detalhe abaixo.
-3. Aplicar só as migrations pendentes, com o `.pgpass` do papel `postgres` (não é `supabase_admin` nem `backup_reader`). Cada arquivo roda com `--single-transaction`. Falha congela o deploy; a correção é uma migration nova (fix-forward), sem editar a que falhou.
+3. Aplicar só as migrations pendentes, com o `.pgpass` do papel `postgres` (não é `supabase_admin` nem `backup_reader`). Cada arquivo roda com `--single-transaction`. Falha congela o deploy até o caso abaixo ser tratado. Não edite o arquivo que falhou.
 
 Antes da migration `20261121100000`, a pré-voo tem de dar zero. Não apague as linhas; corrija o `payment_id`.
 
@@ -80,7 +80,11 @@ printf 'migration_exit=%s\n' "$migration_exit" | tee -a "$LOG"
 test "$migration_exit" -eq 0
 ```
 
-O script cria `supabase_migrations.schema_migrations` se faltar, aplica só o que não está na tabela e grava a versão na mesma transação do arquivo. A versão é só dígitos. Falha congela o deploy. A correção é uma migration nova (fix-forward), sem editar a que falhou. Uma segunda execução no mesmo banco imprime `aplicadas=0`.
+O script cria `supabase_migrations.schema_migrations` se faltar, aplica só o que não está na tabela e grava a versão na mesma transação do arquivo. A versão é só dígitos. Uma segunda execução no mesmo banco imprime `aplicadas=0`.
+
+`55P03` (`lock_timeout`): nada foi gravado em `schema_migrations`. Espere o lock soltar e rode de novo `scripts/apply-migrations.sh`. O timeout da migration de slug é 2 s.
+
+`23514` na migration `20261122130000_tenant_slug_min3.sql`: nada foi alterado. Rode `scripts/diagnose-tenant-slugs.sql` como `backup_reader`, com `PGOPTIONS='-c default_transaction_read_only=on'` e sem `--single-transaction`. Com autorização do Danilo, corrija os slugs e reaplique o mesmo arquivo.
 
 `supabase db push --db-url` só entra se a URL não tiver senha e o `PGPASSFILE` estiver apontado. O CI local não usa esse caminho: `supabase start` aplica pelo socket `trust`.
 
@@ -137,7 +141,9 @@ Exit diferente de 0 congela o deploy.
 
 ### Backup do passo 2
 
-Schemas que o `backup_reader` já lê antes do passo 4, pelas migrations: `public`, `private`, `ledger`, `public_api`, `server_api`. `private`, `public_api` e `server_api` não têm tabela; entram no dump pelas funções visíveis. `auth` e `storage.objects` ainda não. O script canônico `backup-daily.sh` não está no repositório; flags além de `postgres:17` e do papel `backup_reader` continuam NÃO CONFIRMADAS. Este dump da janela usa a lista abaixo, não `--env-file`.
+Schemas que o `backup_reader` já lê antes do passo 4, pelas migrations: `public`, `private`, `ledger`, `public_api`, `server_api`. `private` passa a ter `login_handoffs` só depois da migration da M4. Antes disso, `public_api` e `server_api` não têm tabela; entram no dump pelas funções visíveis. `auth` e `storage.objects` ainda não, neste passo. O script canônico `backup-daily.sh` não está no repositório; flags além de `postgres:17` e do papel `backup_reader` continuam NÃO CONFIRMADAS. Este dump da janela usa a lista abaixo, não `--env-file`.
+
+O passo 2 é o banco de antes das migrations. Um banco só com a M1 tem 28 tabelas, não 32. A contagem esperada sai do `pg_class` como `backup_reader`, no mesmo momento do dump. 32 é a contagem de depois das migrations da M4, e quem confere isso é `scripts/check-dump-counts.sh`.
 
 ```bash
 install -d -m 700 /var/backups/barberclub
@@ -157,9 +163,12 @@ docker run --name "barberclub-dump-$$" --network host \
     -f "/dump/pre-deploy-${GIT_COMMIT}.dump"
 docker rm -f "barberclub-dump-$$" >/dev/null 2>&1 || true
 test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}.dump" || exit 1
+expected="$(BARBERCLUB_PG_ENV_FILE=/run/secrets/backup-reader.pgpass \
+  scripts/psql-from-env-file.sh -tA -c \
+  "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname in ('public','private','ledger','public_api','server_api') and c.relkind = 'r'")"
 docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
   pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}.dump" \
-  | scripts/count-dump-tables.sh 32 || exit 1
+  | scripts/count-dump-tables.sh "$expected" || exit 1
 ```
 
 As 32 tabelas são as 28 de `public` (as 25 da M1 mais `reserved_slugs`, `reserved_slug_prefixes` e `tenant_slug_history`), as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`) e `private.login_handoffs`. O diretório não é o corrente. O dump usa `--exclude-table-data=private.login_handoffs`: a definição entra, os tokens não. O `backup_reader` mantém `SELECT` na tabela porque o `pg_dump` trava todas as tabelas do schema, e sem esse privilégio o `LOCK` falha.
