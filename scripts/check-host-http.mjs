@@ -30,7 +30,10 @@ function raw(path, host, extra = "", method = "GET") {
 }
 
 const cases = [
-  { host: B, path: "/", status: 200, includes: "<h1>BarberClub</h1>" },
+  // O h1 da landing é a promessa ("A página e a agenda da sua barbearia..."); o nome
+  // da marca vive no cabeçalho. A asserção olha a marca, que é o que prova que o host
+  // base serviu a landing e não uma página de tenant.
+  { host: B, path: "/", status: 200, includes: "BarberClub" },
   { host: `ativo.${B}`, path: "/", status: 200, includes: "<h1>Ativo</h1>" },
   { host: `trial1.${B}`, path: "/", status: 200, includes: "Trial" },
   { host: `naoexiste.${B}`, path: "/", status: 404, includes: "Página não encontrada" },
