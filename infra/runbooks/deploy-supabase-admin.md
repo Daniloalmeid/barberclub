@@ -44,7 +44,7 @@ unset PGPASSWORD
 chmod 600 /run/secrets/admin.pgpass
 ```
 
-O mesmo para `/run/secrets/migrate.pgpass` (usuário `postgres`) e `/run/secrets/backup-reader.pgpass` (usuário `backup_reader`). No fim:
+O mesmo para `/run/secrets/migrate.pgpass` (usuário `postgres`). O `.pgpass` durável do `backup_reader` fica em `/etc/barberclub/backup-reader.pgpass` (passo 4.5) e não entra neste `shred`. Uma cópia de sessão em `/run/secrets/backup-reader.pgpass`, se existir, entra. No fim:
 
 ```bash
 shred -u /run/secrets/admin.pgpass /run/secrets/migrate.pgpass /run/secrets/backup-reader.pgpass
@@ -91,10 +91,37 @@ BARBERCLUB_PG_ENV_FILE=/run/secrets/admin.pgpass \
   scripts/psql-from-env-file.sh supabase/admin/superuser.sql
 ```
 
-5. Verificar entrando direto como `backup_reader`. O arquivo é `/run/secrets/backup-reader.pgpass`. Sem `SET ROLE` e sem fallback `docker exec` + `trust` (esse fallback só existe com `BARBERCLUB_VERIFY_LOCAL=1`, e só no CI).
+4.5. Definir a senha do `backup_reader`. Quem executa é o Hermes, com a credencial do `postgres` (`/run/secrets/migrate.pgpass`). A senha é do Hermes/Danilo. Ela entra por arquivo em tmpfs, nunca em argumento e nunca no log.
 
 ```bash
-BARBERCLUB_PG_ENV_FILE=/run/secrets/backup-reader.pgpass \
+set +x
+install -d -m 700 /run/secrets
+install -m 600 /dev/null /run/secrets/backup-reader.password
+read -rs -p 'senha do backup_reader: ' BR_PASSWORD
+printf '\n'
+printf '%s' "$BR_PASSWORD" > /run/secrets/backup-reader.password
+unset BR_PASSWORD
+chmod 600 /run/secrets/backup-reader.password
+BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
+BARBERCLUB_BACKUP_READER_PASSWORD_FILE=/run/secrets/backup-reader.password \
+BARBERCLUB_BACKUP_READER_PGPASS=/etc/barberclub/backup-reader.pgpass \
+  scripts/set-backup-reader-password.sh >/run/secrets/senha-step.out 2>&1
+senha_exit=$?
+shred -u /run/secrets/senha-step.out /run/secrets/backup-reader.password
+printf 'senha definida senha_exit=%s\n' "$senha_exit" | tee -a "$LOG"
+test "$senha_exit" -eq 0
+```
+
+O script gera `ALTER ROLE backup_reader WITH PASSWORD` num SQL em tmpfs (`chmod 600`), aplica com `psql -f` e apaga com `shred -u`. A saída do `psql` não vai para o log. O `.pgpass` durável fica em `/etc/barberclub/backup-reader.pgpass`, modo `600`.
+
+O lugar obrigatório deste passo é entre o `superuser.sql` e o verify. Se o passo 2 precisar do `backup_reader` e a senha ainda não existir, rode só este comando antes do dump: ele não depende do `superuser.sql`.
+
+Rotação: novo arquivo de senha em tmpfs, o mesmo comando (de novo como Hermes, com o `.pgpass` do `postgres`), o script regrava `/etc/barberclub/backup-reader.pgpass`, o arquivo temporário é destruído, e o verify do passo 5 roda outra vez. O log leva só `senha definida` e o exit code.
+
+5. Verificar entrando direto como `backup_reader`. O arquivo é `/etc/barberclub/backup-reader.pgpass` (ou a cópia em `/run/secrets/backup-reader.pgpass`). Sem `SET ROLE` e sem fallback `docker exec` + `trust` (esse fallback só existe com `BARBERCLUB_VERIFY_LOCAL=1`, e só no CI).
+
+```bash
+BARBERCLUB_PG_ENV_FILE=/etc/barberclub/backup-reader.pgpass \
   scripts/verify-superuser-grants.sh 2>&1 | tee -a "$LOG"
 verify_exit=${PIPESTATUS[0]}
 printf 'verify_exit=%s\n' "$verify_exit" | tee -a "$LOG"
@@ -193,12 +220,16 @@ BARBERCLUB_PG_ENV_FILE=/run/secrets/cloud-postgres.pgpass \
   scripts/psql-from-env-file.sh supabase/admin/superuser.sql
 ```
 
-Se `CREATE POLICY` falhar porque o dono de `storage.objects` é `supabase_storage_admin`, parar. O papel `postgres` do Cloud não assume esse dono. O deploy continua bloqueado até o suporte do Supabase, ou uma sessão como `supabase_storage_admin`, aplicar o bloco das policies. Não marcar o passo como feito.
+### Plano B
+
+Se CREATE POLICY em storage.objects ou GRANT em auth falharem rodando como postgres, o bloco vai pelo SQL Editor do painel, executado pelo Danilo, e a verificação é o verify-superuser-grants.sh rodando remoto como backup_reader com .pgpass. Os dois caminhos terminam na mesma verificação; nenhum é marcado como feito sem ela.
+
+A senha do `backup_reader` não entra no SQL Editor. No Cloud ela segue o passo 4.5, com o `.pgpass` do papel `postgres` do projeto.
 
 Depois do staging aprovado, a verificação no Cloud é o script pela rede, com a credencial do `backup_reader`, não consulta colada no SQL editor:
 
 ```bash
-BARBERCLUB_PG_ENV_FILE=/run/secrets/backup-reader.pgpass \
+BARBERCLUB_PG_ENV_FILE=/etc/barberclub/backup-reader.pgpass \
   PGSSLMODE=verify-full \
   scripts/verify-superuser-grants.sh
 ```

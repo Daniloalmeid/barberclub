@@ -1,0 +1,148 @@
+# Publicação no GHCR só depois do CI do mesmo sha.
+# publish.yml não consegue usar needs de um job do ci.yml. O gate é
+# workflow_run: o push no main dispara o CI e, com conclusion success,
+# este workflow publica. workflow_dispatch no main só segue se a API
+# mostrar o CI daquele sha com success (actions: read, sem segredo extra).
+# No pull_request há build e smoke, sem login, sem artefato e sem push.
+# O job push não reconstrói: carrega o tar do smoke e só publica se o Image ID bater.
+name: publish
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+concurrency:
+  group: publish-${{ github.event_name }}-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      publish: ${{ steps.meta.outputs.publish }}
+      image_id: ${{ steps.image.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
+      - name: Sha e se este job pode publicar
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            sha="${{ github.event.workflow_run.head_sha }}"
+            publish=true
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            sha="${{ github.sha }}"
+            if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+              echo "workflow_dispatch só publica a partir do main" >&2
+              exit 1
+            fi
+            ok="$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${sha}&status=success&per_page=1" --jq '.total_count')"
+            if [[ "$ok" == "0" ]]; then
+              echo "CI do sha ${sha} não está success; nada é publicado" >&2
+              exit 1
+            fi
+            publish=true
+          else
+            sha="${{ github.event.pull_request.head.sha }}"
+            publish=false
+          fi
+          test "$(printf '%s' "$sha" | wc -c)" -eq 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - name: Build local para o smoke
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: barberclub:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GIT_COMMIT=${{ steps.meta.outputs.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.built }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.meta.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Smoke /api/health/live em até 30s
+        run: bash scripts/smoke-image.sh barberclub:smoke "${{ steps.meta.outputs.sha }}"
+      - name: Guardar a imagem que passou no smoke
+        id: image
+        if: steps.meta.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          id="$(docker image inspect barberclub:smoke --format '{{.Id}}')"
+          case "$id" in
+            sha256:*) ;;
+            *) echo "image id inesperado: $id" >&2; exit 1 ;;
+          esac
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          docker save barberclub:smoke | gzip > image.tar.gz
+          test -s image.tar.gz
+      - uses: actions/upload-artifact@v7
+        if: steps.meta.outputs.publish == 'true'
+        with:
+          name: barberclub-image
+          path: image.tar.gz
+          retention-days: 1
+
+  push:
+    needs: smoke
+    if: needs.smoke.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: barberclub-image
+          path: /tmp/barberclub-image
+      - name: Carrega a imagem do smoke e confere o Image ID
+        id: loaded
+        run: |
+          set -euo pipefail
+          gunzip -c /tmp/barberclub-image/image.tar.gz | docker load
+          loaded="$(docker image inspect barberclub:smoke --format '{{.Id}}')"
+          expected="${{ needs.smoke.outputs.image_id }}"
+          echo "loaded=$loaded"
+          echo "expected=$expected"
+          if [[ "$loaded" != "$expected" || -z "$expected" ]]; then
+            echo "Image ID divergiu; nada é publicado" >&2
+            exit 1
+          fi
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publica o mesmo Image ID em sha e latest
+        run: |
+          set -euo pipefail
+          sha="${{ needs.smoke.outputs.sha }}"
+          docker tag barberclub:smoke "ghcr.io/daniloalmeid/barberclub:${sha}"
+          docker tag barberclub:smoke ghcr.io/daniloalmeid/barberclub:latest
+          docker push "ghcr.io/daniloalmeid/barberclub:${sha}"
+          docker push ghcr.io/daniloalmeid/barberclub:latest

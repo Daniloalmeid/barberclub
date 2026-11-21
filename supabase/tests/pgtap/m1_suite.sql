@@ -1,7 +1,7 @@
 -- Suíte T01–T26 e G01–G13. A transação desfaz a fixture.
 begin;
 
-select * from plan(139);
+select * from plan(142);
 
 create temp table fx (name text primary key, id uuid not null);
 grant select on fx to public;
@@ -919,6 +919,12 @@ select pg_temp.err(
   'P0002',
   'record_refund_result payment_not_found'
 );
+select is(
+  (select count(*) from public.webhook_events
+    where event_id in ('evt-ausente', 'evt-ausente-refund')),
+  0::bigint,
+  'payment_not_found nao grava webhook_events'
+);
 reset role;
 select is(
   (select tenant_id from public.webhook_events where provider = 'refund' and event_id = 'evt-t25-refund'),
@@ -1399,6 +1405,22 @@ select ok(
   and has_table_privilege('backup_reader', 'auth.users', 'select')
   and has_table_privilege('backup_reader', 'auth.identities', 'select'),
   'backup_reader le auth.users e auth.identities'
+);
+
+select is(
+  (select attnotnull
+     from pg_attribute
+    where attrelid = 'public.webhook_events'::regclass
+      and attname = 'payment_id'
+      and not attisdropped),
+  true,
+  'webhook_events.payment_id attnotnull'
+);
+select pg_temp.err(
+  $$insert into public.webhook_events (provider, event_id, tenant_id, payment_id)
+    values ('qa', 'pay-null', '00000000-0000-4000-8000-000000000001', null)$$,
+  '23502',
+  'webhook_events.payment_id null recusado'
 );
 
 select * from finish();
