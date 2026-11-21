@@ -8,7 +8,8 @@ export type PublicCfg = {
 let booted: PublicCfg | undefined;
 
 function readConfig(env: NodeJS.ProcessEnv): PublicCfg {
-  if (env.NODE_ENV === "production" && !env.APP_ENV) throw new Error("APP_ENV");
+  const building = env.NEXT_PHASE === "phase-production-build";
+  if (env.NODE_ENV === "production" && !env.APP_ENV && !building) throw new Error("APP_ENV");
   const appEnv = env.APP_ENV ?? "development";
   const rootDomain = env.ROOT_DOMAIN || (appEnv === "production" ? "" : "barber.workloop.com.br");
   const schemeValue = env.PUBLIC_SCHEME || (appEnv === "development" ? "http" : "https");
