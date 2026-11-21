@@ -26,6 +26,24 @@ export APP_ENV=production
 export ROOT_DOMAIN=barber.workloop.com.br
 export PUBLIC_SCHEME=https
 export PUBLIC_PORT=
+# O teste da migration de slug encerra as conexões do Postgres. O GoTrue
+# fica com o pool morto e o grant devolve 57P01. Subir o auth de novo.
+auth_cid="$(docker ps -qf name=supabase_auth_ | head -1)"
+if [[ -n "$auth_cid" ]]; then
+  docker restart "$auth_cid" >/dev/null
+fi
+ready_auth=0
+for _ in $(seq 1 30); do
+  if curl -fsS "${SUPABASE_URL}/auth/v1/health" >/dev/null; then
+    ready_auth=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$ready_auth" != "1" ]]; then
+  echo "check-login-http: o auth não voltou depois do restart" >&2
+  exit 1
+fi
 cd "$root/apps/web"
 pnpm exec next start -p "$port" >/tmp/barberclub-next-login.log 2>&1 &
 web=$!
