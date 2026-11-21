@@ -1,5 +1,10 @@
--- Reversão: drop das funções novas. invite_member e change_member_role
--- voltam ao corpo da migration 20261120105000_public_api.sql.
+-- O preferido é corrigir para a frente. Reverter traz de volta o K15:
+-- o invite_member antigo rebaixa uma membership active para invited,
+-- inclusive a do owner. Os três passos, testados pelo DevOps, estão em
+-- docs/decisoes-m2.md: reaplicar 20261120105000_public_api.sql:436-484;
+-- dropar accept_invite, revoke_member, appoint_owner, guard_last_owner,
+-- assert_aal2, lock_tenant_members e tenant_is_suspended; apagar a linha
+-- 20261123100000 de supabase_migrations.schema_migrations.
 -- Owner novo só entra por appoint_owner, e só se o chamador está em platform_admins.
 -- P-M2-4, adotada por padrão pelo Orquestrador em 21/11: estas RPCs não
 -- promovem, rebaixam nem removem owner. Danilo pode revisar.

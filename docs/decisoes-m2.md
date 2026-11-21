@@ -24,3 +24,28 @@ As funções da M1 abaixo continuam aceitando um JWT AAL1. Não foram alteradas 
 - `public_api.record_commission_payout`
 
 `get_tenant_public`, `list_services`, `list_staff` e `list_free_slots` também não leem `aal`. São leitura pública, concedida a `anon`.
+
+## Rollback
+
+O preferido é corrigir para a frente. Reverter traz de volta o K15: `invite_member` passa a rebaixar uma membership `active` para `invited`, inclusive a do próprio owner. O DevOps testou estes três passos, nesta ordem.
+
+1. Reaplicar o bloco de `supabase/migrations/20261120105000_public_api.sql`, linhas 436 a 484. Isso devolve `invite_member` e `change_member_role` ao corpo da M1. O `CREATE OR REPLACE` não mexe nos grants: `anon`, `service_role` e `backup_reader` continuam sem `EXECUTE`, como esta migration revogou.
+
+2. Dropar as funções que esta migration criou, sem `CASCADE`, para não levar junto as duas que o passo 1 acabou de restaurar. Primeiro as de `public_api`, que dependem das de `private`:
+
+```sql
+drop function public_api.accept_invite(uuid);
+drop function public_api.revoke_member(uuid, uuid);
+drop function public_api.appoint_owner(uuid, uuid);
+drop function private.guard_last_owner(uuid, uuid);
+drop function private.assert_aal2();
+drop function private.lock_tenant_members(uuid);
+drop function private.tenant_is_suspended(uuid);
+```
+
+3. Apagar o registro da migration:
+
+```sql
+delete from supabase_migrations.schema_migrations
+ where version = '20261123100000';
+```
