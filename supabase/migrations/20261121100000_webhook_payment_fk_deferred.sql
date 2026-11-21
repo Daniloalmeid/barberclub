@@ -15,14 +15,41 @@ update public.webhook_events as w
  where w.payment_id = p.id
    and w.tenant_id is null;
 
+-- Pré-voo: não apaga linha. Sem payment_id, ou payment_id sem payments, o SET NOT NULL para.
+do $pre$
+declare
+  sem_payment bigint;
+  orfao bigint;
+begin
+  select count(*) into sem_payment
+    from public.webhook_events
+   where payment_id is null;
+  select count(*) into orfao
+    from public.webhook_events w
+   where w.payment_id is not null
+     and not exists (select 1 from public.payments p where p.id = w.payment_id);
+  if sem_payment > 0 or orfao > 0 then
+    raise exception
+      'webhook_events pré-voo: % sem payment_id e % com payment órfão. Não apague essas linhas; corrija antes do SET NOT NULL.',
+      sem_payment, orfao;
+  end if;
+end
+$pre$;
+
 alter table public.webhook_events
   alter column tenant_id set not null;
 
+-- NO ACTION é o padrão. DEFERRABLE INITIALLY DEFERRED: o FOR KEY SHARE espera o COMMIT.
+-- Não usar SET CONSTRAINTS IMMEDIATE nesta constraint.
 alter table public.webhook_events
   add constraint webhook_events_tenant_payment_fkey
   foreign key (tenant_id, payment_id)
   references public.payments (tenant_id, id)
+  on delete no action
   deferrable initially deferred;
+
+comment on constraint webhook_events_tenant_payment_fkey on public.webhook_events is
+  'NO ACTION, DEFERRABLE INITIALLY DEFERRED. A checagem espera o COMMIT.';
 
 create index webhook_events_tenant_id_payment_id_idx
   on public.webhook_events (tenant_id, payment_id);
@@ -45,6 +72,9 @@ alter table public.refunds
   foreign key (tenant_id, payment_id)
   references public.payments (tenant_id, id)
   on delete restrict;
+
+create index refunds_tenant_id_payment_id_idx
+  on public.refunds (tenant_id, payment_id);
 
 alter table public.refund_requests
   drop constraint if exists refund_requests_payment_id_fkey;

@@ -62,23 +62,25 @@ Conexão: porta `5432` direta, ou o session pooler na porta `5432`. O transactio
 2. Backup lógico, ou dispensa registrada. Detalhe abaixo.
 3. Aplicar só as migrations pendentes, com o `.pgpass` do papel `postgres` (não é `supabase_admin` nem `backup_reader`). Cada arquivo roda com `--single-transaction`. Falha congela o deploy; a correção é uma migration nova (fix-forward), sem editar a que falhou.
 
+Antes da migration `20261121100000`, a pré-voo tem de dar zero. Não apague as linhas; corrija o `payment_id`.
+
 ```bash
-applied=$(BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
-  scripts/psql-from-env-file.sh -tA -c "select version from supabase_migrations.schema_migrations")
-for f in supabase/migrations/*.sql; do
-  ver=$(basename "$f" .sql)
-  ver=${ver%%_*}
-  if grep -qx "$ver" <<< "$applied"; then
-    continue
-  fi
-  BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
-    scripts/psql-from-env-file.sh --single-transaction "$f" \
-    || { printf 'migration_falhou=%s\n' "$ver" | tee -a "$LOG"; exit 1; }
-  BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
-    scripts/psql-from-env-file.sh -v "ver=$ver" -c \
-    "insert into supabase_migrations.schema_migrations (version) values (:'ver')"
-done
+BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
+  scripts/psql-from-env-file.sh -tA -c \
+  "select (select count(*) from public.webhook_events where payment_id is null), (select count(*) from public.webhook_events w where w.payment_id is not null and not exists (select 1 from public.payments p where p.id = w.payment_id))"
 ```
+
+Os dois números precisam ser 0. Se a tabela ainda não existe, o banco é novo e a pré-voo não se aplica.
+
+```bash
+BARBERCLUB_PG_ENV_FILE=/run/secrets/migrate.pgpass \
+  scripts/apply-migrations.sh 2>&1 | tee -a "$LOG"
+migration_exit=${PIPESTATUS[0]}
+printf 'migration_exit=%s\n' "$migration_exit" | tee -a "$LOG"
+test "$migration_exit" -eq 0
+```
+
+O script cria `supabase_migrations.schema_migrations` se faltar, aplica só o que não está na tabela e grava a versão na mesma transação do arquivo. A versão é só dígitos. Falha congela o deploy. A correção é uma migration nova (fix-forward), sem editar a que falhou. Uma segunda execução no mesmo banco imprime `aplicadas=0`.
 
 `supabase db push --db-url` só entra se a URL não tiver senha e o `PGPASSFILE` estiver apontado. O CI local não usa esse caminho: `supabase start` aplica pelo socket `trust`.
 
@@ -127,10 +129,10 @@ docker run --name "barberclub-dump-$$" --network host \
     -n public -n private -n ledger -n public_api -n server_api \
     -f "/dump/pre-deploy-${GIT_COMMIT}.dump"
 docker rm -f "barberclub-dump-$$" >/dev/null 2>&1 || true
-test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}.dump"
-n=$(docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
-  pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}.dump" | awk '$4 == "TABLE" { c++ } END { print c+0 }')
-test "$n" -eq 28
+test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}.dump" || exit 1
+docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
+  pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}.dump" \
+  | scripts/count-dump-tables.sh 28 || exit 1
 ```
 
 As 28 tabelas são as 25 de `public` (`admin_cases`, `appointments`, `audit_log`, `customers`, `memberships`, `outbox_events`, `payments`, `plans`, `platform_admins`, `profiles`, `rate_limits`, `refund_requests`, `refunds`, `services`, `staff`, `staff_busy`, `staff_services`, `subscriptions`, `tenant_branding`, `tenant_domains`, `tenant_settings`, `tenants`, `time_off`, `webhook_events`, `work_schedules`) e as 3 de `ledger` (`accounts`, `journal_entries`, `journal_lines`). O diretório não é o corrente.
@@ -149,10 +151,10 @@ docker run --name "barberclub-dump-auth-$$" --network host \
   pg_dump -Fc -t auth.users -t auth.identities \
     -f "/dump/pre-deploy-${GIT_COMMIT}-auth.dump"
 docker rm -f "barberclub-dump-auth-$$" >/dev/null 2>&1 || true
-test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}-auth.dump"
-n=$(docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
-  pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}-auth.dump" | awk '$4 == "TABLE" { c++ } END { print c+0 }')
-test "$n" -eq 2
+test -s "/var/backups/barberclub/pre-deploy-${GIT_COMMIT}-auth.dump" || exit 1
+docker run --rm -v /var/backups/barberclub:/dump:ro postgres:17 \
+  pg_restore --list "/dump/pre-deploy-${GIT_COMMIT}-auth.dump" \
+  | scripts/count-dump-tables.sh 2 || exit 1
 ```
 
 `PGHOST`, `PGPORT` e `PGDATABASE` vêm do ambiente do operador, sem senha. `PGUSER` fica fixo em `backup_reader`.

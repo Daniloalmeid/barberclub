@@ -1,7 +1,7 @@
 -- Suíte T01–T26 e G01–G13. A transação desfaz a fixture.
 begin;
 
-select * from plan(132);
+select * from plan(139);
 
 create temp table fx (name text primary key, id uuid not null);
 grant select on fx to public;
@@ -897,9 +897,34 @@ select 'pay_t25', id from public.payments
  where appointment_id = (select id from public.appointments where idempotency_key = 't25');
 set local role service_role;
 select is(server_api.process_payment_event('asaas', 'evt-t25', pg_temp.uid('pay_t25'), 'paid', 5000), 'confirmed', 'T25 primeiro evento');
+select is(
+  (select tenant_id from public.webhook_events where provider = 'asaas' and event_id = 'evt-t25'),
+  pg_temp.uid('tenant_a'),
+  'process_payment_event grava tenant_id'
+);
 select is(server_api.process_payment_event('asaas', 'evt-t25', pg_temp.uid('pay_t25'), 'paid', 5000), 'duplicate_event', 'T25 evento repetido');
 select is(server_api.process_payment_event('asaas', 'evt-t25-b', pg_temp.uid('pay_t25'), 'paid', 5000), 'already_processed', 'T25 outro evento do mesmo pagamento');
+select is(
+  server_api.record_refund_result(pg_temp.uid('pay_t25'), 'ignored', 'evt-t25-refund'),
+  'ignored_status',
+  'record_refund_result ignora status'
+);
+select pg_temp.err(
+  $$select server_api.process_payment_event('asaas', 'evt-ausente', '00000000-0000-4000-8000-000000000099', 'paid', 1)$$,
+  'P0002',
+  'process_payment_event payment_not_found'
+);
+select pg_temp.err(
+  $$select server_api.record_refund_result('00000000-0000-4000-8000-000000000099', 'refunded', 'evt-ausente-refund')$$,
+  'P0002',
+  'record_refund_result payment_not_found'
+);
 reset role;
+select is(
+  (select tenant_id from public.webhook_events where provider = 'refund' and event_id = 'evt-t25-refund'),
+  pg_temp.uid('tenant_a'),
+  'record_refund_result grava tenant_id'
+);
 select is(
   (select count(*) from ledger.journal_entries where source_id = pg_temp.uid('pay_t25') and kind = 'payment'),
   1::bigint,
@@ -1186,6 +1211,10 @@ select ok(
   'G13 sem execute em security definer nosso'
 );
 
+select fk_ok(
+  'public', 'webhook_events', array['tenant_id', 'payment_id'],
+  'public', 'payments', array['tenant_id', 'id']
+);
 select is(
   (select c.condeferrable
      from pg_constraint c
@@ -1207,6 +1236,7 @@ select is(
   false,
   'refunds FK composta e imediata'
 );
+select has_index('public', 'refunds', 'refunds_tenant_id_payment_id_idx', 'indice de refunds por tenant e payment');
 select is(
   (select c.condeferrable from pg_constraint c where c.conname = 'refund_requests_tenant_payment_fkey'),
   false,
@@ -1239,12 +1269,29 @@ select lives_ok(
   'dblink para o commit da FK'
 );
 select lives_ok(
-  $$select extensions.dblink_connect('fkchk', 'host=' || host(inet_server_addr()) || ' dbname=postgres user=postgres password=postgres')$$,
+  $$select extensions.dblink_connect('fkchk', 'host=' || host(inet_server_addr()) || ' dbname=' || current_database() || ' user=' || current_user || ' password=' || current_setting('barberclub.dblink_password'))$$,
   'sessao separada da FK'
 );
 select lives_ok(
   $q$select extensions.dblink_exec('fkchk', $setup$
     begin;
+    delete from public.webhook_events
+     where payment_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14'
+        or event_id = 'fk-wh-cross';
+    delete from public.payments where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14';
+    delete from public.appointments where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa13';
+    delete from public.staff_services where staff_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11';
+    delete from public.services where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12';
+    delete from public.staff where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11';
+    delete from public.customers where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10';
+    delete from public.tenants where id in (
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
+    );
+    delete from auth.identities where user_id = '33333333-3333-4333-8333-333333333333';
+    delete from auth.users
+     where id = '33333333-3333-4333-8333-333333333333'
+        or email = 'fk-wh@example.test';
     insert into auth.users (
       instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at,

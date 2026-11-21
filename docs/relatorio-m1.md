@@ -18,7 +18,7 @@ A M1 fecha o monorepo, o schema e a suíte de banco. Não há tela de produto, d
 
 | Suíte | Resultado |
 |---|---|
-| pgTAP (`supabase/tests/pgtap/m1_suite.sql`) | 132 asserções, T01–T26 e G01–G13, PASS |
+| pgTAP (`supabase/tests/pgtap/m1_suite.sql`) | 139 asserções, `plan(139)`, T01–T26 e G01–G13, PASS |
 | Concorrência C01–C08 | 20 rodadas cada, deadlocks do banco sem aumento, PASS |
 | Unitário do path e do middleware | 43 testes, PASS |
 | lint, typecheck e build do Next | PASS |
