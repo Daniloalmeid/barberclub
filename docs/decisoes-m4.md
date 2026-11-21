@@ -4,7 +4,7 @@ O desenho aprovado está em `docs/m4-arquitetura.md`, copiado sem alteração.
 
 - O `redirect()` do Next durante o render de uma página é 307. O anônimo em `/login/regularizar` recebe 303 pelo middleware, antes da página, com `Location: /login`.
 - A página de tenant ativo é um route handler para poder responder 503 quando o PostgREST falha. O 404 de slug inválido, reservado, inexistente e inativo continua no `app/not-found.tsx`.
-- `private.login_handoffs` também revoga o `backup_reader`. O selo do handoff não entra no backup.
+- `private.login_handoffs` fica sem policy e sem grant para `anon`, `authenticated` e `service_role`. O `backup_reader` mantém o `SELECT` do default privilege, porque o dump do schema `private` trava a tabela.
 - A troca de slug da M4 é `server_api.rename_tenant_slug`, só com `EXECUTE` para `service_role`. Não há tela em `admin.`, que segue 404.
 - O POST de `/login` contra o GoTrue e o TOTP não entram no HTTP cru. O HTTP cobre o GET anônimo, o 303 e o 404. A decisão de quantos tenants o usuário vê está em `resolveLogin`, e as funções estão no pgTAP.
 - As páginas da landing leem o header interno no layout, então não ficam `force-static`. O conteúdo não consulta o banco.

@@ -27,7 +27,7 @@ create table private.login_handoffs (
   used_at timestamptz
 );
 alter table private.login_handoffs enable row level security;
-revoke all on private.login_handoffs from public, anon, authenticated, service_role, backup_reader;
+revoke all on private.login_handoffs from public, anon, authenticated, service_role;
 
 create function private.assert_slug_allowed()
 returns trigger
