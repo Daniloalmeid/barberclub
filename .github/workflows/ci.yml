@@ -23,6 +23,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - name: HTTP cru do path contra o build
+        run: bash scripts/check-path-http.sh
 
   db:
     runs-on: ubuntu-latest
@@ -54,11 +56,7 @@ jobs:
       - name: Provar que o verificador falha sem uma policy ou com OR true
         run: BARBERCLUB_VERIFY_LOCAL=1 bash scripts/verify-superuser-grants-negative.sh
       - name: pgTAP T01–T26 e G01–G13
-        run: |
-          cid="$(docker ps -qf name=supabase_db_ | head -1)"
-          docker exec -i -u postgres "$cid" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
-            -c "alter database postgres set barberclub.dblink_password = 'postgres'"
-          supabase test db supabase/tests/pgtap
+        run: bash scripts/run-pgtap.sh
       - uses: pnpm/action-setup@v6
         with:
           version: 10.33.4

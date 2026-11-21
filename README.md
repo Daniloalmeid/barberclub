@@ -11,6 +11,7 @@ pnpm install
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 supabase start
 bash scripts/apply-superuser-grants.sh
-supabase test db supabase/tests/pgtap
+bash scripts/run-pgtap.sh
 pnpm exec tsx supabase/tests/concurrency/run.ts
+bash scripts/check-path-http.sh
 ```

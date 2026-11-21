@@ -12,7 +12,16 @@ No Supabase local o `postgres` da migration não é superusuário, mas conseguiu
 
 ## Middleware
 
-A M1 cria o middleware, então a rejeição de path entra agora, não fica só anotada para a M2. Na entrada, antes de resolver tenant, o app responde 400 para segmento codificado (`%2e`, `%2f`, `%5c`, `%00`, inclusive codificação dupla), dot-segment (`.`, `..`, `..;algo`) e `;` no segmento. A função pura cobre a forma crua. O parser de URL do `NextRequest` já resolve um `..` puro antes do middleware; o caso que sobrevive, e que o advisory aponta, é o `/..;x/`.
+A M1 cria o middleware, então a rejeição de path entra agora, não fica só anotada para a M2. `next.config.ts` liga `skipMiddlewareUrlNormalize` e `skipTrailingSlashRedirect` para o middleware ver o path cru e o Next não responder 308 em `/..;x/`.
+
+No servidor (`next start`, HTTP cru, sem o cliente reescrever o path) o que fica garantido é:
+
+- 400 `{error:"bad_path"}` e `cache-control: no-store`, sem `Location`, para o que ainda chega inteiro: codificação dupla (`/foo/%252e%252e/bar`, `/foo/%252fbar`), `%5c`, `%2f`, `;` no segmento (`/a;b`) e o dot-segment com parâmetro (`/..;x` e `/..;x/`).
+- 404 da página do app, sem `Location` e sem vazar arquivo, para `%2e%2e` simples (`/foo/%2e%2e/bar`) e para `..` literal (`/foo/../bar`). O Next decodifica e colapsa esse segmento antes do middleware; não há como o middleware devolver 400 nesse caso. O resultado é a rota colapsada, que não existe, e não um 308 para fora do app.
+
+A função pura e o teste em memória cobrem a forma crua, inclusive o `%2e%2e` que o servidor já não entrega. O contrato do processo é `scripts/check-path-http.sh`.
+
+O pgTAP que usa dblink lê `barberclub.dblink_password`. Quem define isso é `scripts/run-pgtap.sh` (supabase_admin, senha fora da linha de comando). `supabase test db` sozinho, com o `postgres` local que não é superusuário, não consegue o `ALTER DATABASE` e falha esses casos.
 
 ## Testes de privilégio
 

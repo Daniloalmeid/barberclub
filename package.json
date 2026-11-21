@@ -10,7 +10,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "build": "turbo run build",
-    "test:db": "supabase test db supabase/tests/pgtap",
+    "test:db": "bash scripts/run-pgtap.sh",
     "test:concurrency": "tsx supabase/tests/concurrency/run.ts",
     "check:locks": "node scripts/check-locks.mjs"
   },
