@@ -3,7 +3,7 @@ import { isSlugShape } from "@barberclub/config/slug";
 import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
 import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
-import { getTenantPublic, listFreeSlots, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
+import { getTenantPublic, listFreeSlots, listProducts, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
 import {
   aceitarConvite,
   bookWithSession,
@@ -287,6 +287,19 @@ h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16e
 .card .price{font-weight:700;white-space:nowrap;color:var(--p)}
 .cta{display:block;text-align:center;text-decoration:none;background:var(--p);color:var(--on);font-weight:700;font-size:.95rem;padding:.9rem 1rem;border-radius:.9rem;margin:1rem 0 .5rem}
 .ghost{display:block;text-align:center;text-decoration:none;border:1px solid var(--line);background:var(--surface);color:var(--txt);font-weight:500;font-size:.88rem;padding:.8rem 1rem;border-radius:.9rem;margin:.5rem 0}
+.prods{display:grid;grid-template-columns:repeat(2,1fr);gap:.7rem;margin-top:.6rem}
+.prod{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:1rem;overflow:hidden;text-decoration:none;color:inherit}
+.prod-media{position:relative;display:grid;place-items:center;height:6.4rem;background:linear-gradient(145deg,var(--p),var(--s));}
+.prod-ini{font-weight:800;font-size:1.15rem;letter-spacing:.06em;color:var(--on);opacity:.92}
+.prod-off{position:absolute;top:.45rem;left:.45rem;background:var(--a);color:#101012;font-size:.6rem;font-weight:800;padding:.16rem .38rem;border-radius:.4rem}
+.prod-body{display:flex;flex-direction:column;gap:.22rem;padding:.6rem .7rem .7rem;flex:1}
+.prod-cat{font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--a);font-weight:800}
+.prod-tit{font-size:.82rem;font-weight:650;line-height:1.25;margin:0}
+.prod-desc{font-size:.68rem;color:var(--muted);line-height:1.3;margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.prod-preco{display:flex;align-items:baseline;gap:.3rem;flex-wrap:wrap;margin-top:auto}
+.prod-preco .agora{font-weight:800;font-size:.88rem;color:var(--p)}
+.prod-preco .antes{font-size:.66rem;color:var(--muted);text-decoration:line-through}
+.prod-btn{display:block;text-align:center;text-decoration:none;background:var(--p);color:var(--on);font-weight:700;font-size:.72rem;padding:.5rem;border-radius:.6rem;margin-top:.4rem}
 .team{display:flex;gap:.6rem;overflow-x:auto;padding-bottom:.25rem}
 .team .who{min-width:5.5rem;text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.75rem .5rem;font-size:.76rem;font-weight:500}
 .avatar{width:2.5rem;height:2.5rem;border-radius:9999px;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;margin:0 auto .4rem;border:1px solid var(--line)}
@@ -301,7 +314,7 @@ h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16e
 .slots a{background:var(--surface);border:1px solid var(--line);border-radius:.7rem;padding:.65rem 0;text-align:center;text-decoration:none;color:inherit;font-size:.9rem;font-weight:600}
 .slots a:active{background:var(--p);color:var(--on);border-color:var(--p)}
 .empty{background:var(--surface);border:1px dashed var(--line);border-radius:1rem;padding:1rem;color:var(--muted);font-size:.86rem}
-nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:20;background:rgba(25,26,29,.96);backdrop-filter:blur(8px);border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:20;background:var(--surface);backdrop-filter:blur(8px);border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
 nav.tabs a{flex:1;text-align:center;padding:.6rem 0 .7rem;text-decoration:none;color:#6f6f79;font-size:.66rem;font-weight:600}
 nav.tabs a.on{color:var(--p)}
 nav.tabs .ico{display:block;font-size:1.05rem;line-height:1.25}
@@ -345,7 +358,7 @@ function appPage(options: {
   title: string;
   description: string;
   body: string;
-  nav?: "inicio" | "agendar" | "conta";
+  nav?: "inicio" | "agendar" | "produtos" | "conta";
   // "painel" troca a barra de baixo: quem trabalha na barbearia não deve ser levado
   // para a área do cliente ao tocar em Início.
   shell?: "cliente" | "painel";
@@ -360,7 +373,7 @@ function appPage(options: {
   const crumbs = (options.crumbs ?? [])
     .map((crumb) => `<a class="ghost" href="${escapeHtml(crumb.href)}">${escapeHtml(crumb.label)}</a>`)
     .join("");
-  const nav = (key: "inicio" | "agendar" | "conta", label: string, icon: string, href: string) =>
+  const nav = (key: "inicio" | "agendar" | "produtos" | "conta", label: string, icon: string, href: string) =>
     `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
   const abas =
     options.shell === "painel"
@@ -369,7 +382,7 @@ function appPage(options: {
         `<a href="/painel/clientes"><span class="ico">☺</span>Clientes</a>` +
         `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>` +
         `<a href="/painel/financeiro"><span class="ico">$</span>Caixa</a>`
-      : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}`;
+      : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("produtos", "Produtos", "🛍", "/produtos")}${nav("conta", "Conta", "☺", "/conta")}`;
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
 
@@ -411,6 +424,7 @@ function renderHome(o: {
   canonical: string;
   services: Awaited<ReturnType<typeof listServices>>;
   staff: Awaited<ReturnType<typeof listStaff>>;
+  produtos: Awaited<ReturnType<typeof listProducts>>;
   // Quem trabalha na barbearia precisa de um caminho de volta ao painel; sem isso,
   // logado como dono, a home o trata como cliente e ele fica sem porta de entrada.
   papel?: string | null;
@@ -454,7 +468,11 @@ function renderHome(o: {
         )
         .join("")}</div>`
     : "";
-  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}${contato}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
+  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}${contato}` +
+    (o.produtos.length
+      ? `<a class="card" href="/produtos" style="border-color:var(--p)"><div class="row"><span class="t">Produtos da barbearia</span><span class="price">${o.produtos.length} →</span></div><span class="d">Pomadas, óleo de barba, presentes</span></a>`
+      : "") +
+    `<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
   return appPage({
     row: o.row,
     name: o.nome,
@@ -1167,6 +1185,72 @@ function renderDespesas(o: {
       `<option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartão</option><option value="boleto">Boleto</option><option value="outro">Outro</option></select>` +
       `</div><button class="cta" type="submit">Lançar</button></form>` +
       `<a class="ghost" href="/painel/financeiro">Ver o caixa</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
+  });
+}
+
+
+// Vitrine: o que a barbearia vende no balcão. Sem foto inventada — o bloco colorido usa
+// as cores da casa e as iniciais; a foto entra quando a barbearia subir a dela.
+function renderProdutos(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; image_url: string | null }>;
+  whatsapp: unknown;
+}): string {
+  const wa = whatsappLink(o.whatsapp, o.nome);
+  const numero = String(o.whatsapp ?? "").replace(/\D/g, "");
+  const categorias = [...new Set(o.produtos.map((p) => p.category))];
+  const cards = o.produtos
+    .map((item) => {
+      const de = Number(item.compare_price_cents) || 0;
+      const por = Number(item.price_cents) || 0;
+      const off = de > por && por > 0 ? Math.round(((de - por) / de) * 100) : 0;
+      const iniciais = item.name
+        .split(/\s+/)
+        .filter((palavra) => palavra.length > 2)
+        .slice(0, 2)
+        .map((palavra) => palavra[0]?.toUpperCase() ?? "")
+        .join("") || item.name.slice(0, 2).toUpperCase();
+      const mensagem = `Ola! Quero o ${item.name} (${money(por)}) que vi no site da ${o.nome}.`;
+      const link = numero
+        ? `https://wa.me/${numero}?text=${encodeURIComponent(mensagem)}`
+        : wa || "/";
+      return (
+        `<article class="prod">` +
+        `<div class="prod-media">` +
+        (off > 0 ? `<span class="prod-off">-${off}%</span>` : "") +
+        (item.image_url
+          ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" style="max-height:100%;max-width:100%;object-fit:contain">`
+          : `<span class="prod-ini">${escapeHtml(iniciais)}</span>`) +
+        `</div>` +
+        `<div class="prod-body">` +
+        `<span class="prod-cat">${escapeHtml(item.category)}</span>` +
+        `<h3 class="prod-tit">${escapeHtml(item.name)}</h3>` +
+        (item.description ? `<p class="prod-desc">${escapeHtml(item.description)}</p>` : "") +
+        `<div class="prod-preco"><span class="agora">${escapeHtml(money(por))}</span>${de > por ? `<span class="antes">${escapeHtml(money(de))}</span>` : ""}</div>` +
+        `<a class="prod-btn" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Reservar</a>` +
+        `</div></article>`
+      );
+    })
+    .join("");
+
+  const corpo = o.produtos.length
+    ? `<div class="prods">${cards}</div>` +
+      `<p class="d" style="color:var(--muted);font-size:.7rem;margin:.8rem 0 0">Preços da loja física. A reserva é pelo WhatsApp e o pagamento é no balcão.</p>`
+    : `<p class="empty">A barbearia ainda não cadastrou produtos.</p>`;
+
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}produtos`,
+    title: `Produtos — ${o.nome}`,
+    description: `Produtos de cabelo, barba e presentes da ${o.nome}.`,
+    nav: "produtos" as const,
+    body:
+      `<h1>Produtos</h1><p class="sub">${o.produtos.length} itens${categorias.length ? ` · ${escapeHtml(categorias.join(" · "))}` : ""}</p>` +
+      corpo +
+      `<a class="ghost" href="/agendar">Agendar um horário</a>`,
   });
 }
 
@@ -2246,6 +2330,10 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
   if (path && path.length > 0) {
+    if (path[0] === "produtos" && path.length === 1) {
+      const produtos = await listProducts(slug);
+      return html(renderProdutos({ row, nome, canonical, produtos, whatsapp: row.whatsapp_public }));
+    }
     if (path[0] === "painel" && path[1] === "entrar") {
       return html(renderPainelEntrar({ row, nome, canonical }));
     }
@@ -2597,7 +2685,8 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
     const tenant = await tenantBySlug(slug).catch(() => null);
     if (tenant) papel = await panelRole(tenant.id, sessao.userId).catch(() => null);
   }
-  const pagina = renderHome({ row, slug, nome, timezone, canonical, services, staff: await listStaff(slug), papel });
+  const [staffHome, produtosHome] = await Promise.all([listStaff(slug), listProducts(slug)]);
+  const pagina = renderHome({ row, slug, nome, timezone, canonical, services, staff: staffHome, produtos: produtosHome, papel });
   return new Response(pagina, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
