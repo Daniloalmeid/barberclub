@@ -20,6 +20,7 @@ import {
   listMembers,
   loginStaff,
   panelAgenda,
+  panelCustomers,
   panelResumo,
   panelRole,
   readSession,
@@ -244,10 +245,10 @@ function appPage(options: {
     `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
   const abas =
     options.shell === "painel"
-      ? `<a class="on" href="/painel"><span class="ico">▤</span>Agenda</a>` +
-        `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>` +
-        `<a href="/"><span class="ico">⌂</span>Site</a>` +
-        `<a href="/sair"><span class="ico">⎋</span>Sair</a>`
+      ? `<a class="on" href="/painel"><span class="ico">▤</span>Painel</a>` +
+        `<a href="/painel/agenda"><span class="ico">◷</span>Agenda</a>` +
+        `<a href="/painel/clientes"><span class="ico">☺</span>Clientes</a>` +
+        `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>`
       : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}`;
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
@@ -504,7 +505,131 @@ function renderConvite(o: { row: Record<string, unknown>; nome: string; canonica
   });
 }
 
-// ---------- painel do barbeiro ----------
+// Visão geral: a porta do painel. Responde "como está hoje" e leva a cada módulo.
+function renderVisaoGeral(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  papel: string;
+  dia: string;
+  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number };
+  agenda: Array<{
+    appointment_id: string;
+    starts_at: string;
+    status: string;
+    customer_name: string | null;
+    service_name: string | null;
+    staff_name: string | null;
+    price_cents: number | null;
+  }>;
+  clientes: number;
+  sumidos: number;
+}): string {
+  const hoje = todayIn(o.timezone);
+  const proximos = o.agenda
+    .filter((a) => a.status === "confirmed" || a.status === "hold")
+    .slice(0, 3)
+    .map(
+      (a) =>
+        `<div class="r"><span>${escapeHtml(fmtTime(a.starts_at, o.timezone))} · ${escapeHtml(a.customer_name ?? "Cliente")}` +
+        `<br><span class="off" style="font-size:.7rem">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span></span>` +
+        `<span>${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>`,
+    )
+    .join("");
+
+  const modulo = (href: string, titulo: string, desc: string, badge?: string) =>
+    `<a class="card" href="${escapeHtml(href)}"><div class="row"><span class="t">${escapeHtml(titulo)}</span>` +
+    `<span class="price">${escapeHtml(badge ?? "→")}</span></div><span class="d">${escapeHtml(desc)}</span></a>`;
+
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel`,
+    title: `Painel — ${o.nome}`,
+    description: `Visão geral da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Olá, ${escapeHtml(o.papel)}</h1><p class="sub">${escapeHtml(fmtDay(`${hoje}T12:00:00Z`, o.timezone))}</p>` +
+      `<div class="hours" style="margin:.75rem 0">` +
+      `<div class="r"><span>Agendamentos hoje</span><span><strong>${Number(o.resumo.total) || 0}</strong></span></div>` +
+      `<div class="r"><span>Confirmados</span><span>${Number(o.resumo.confirmados) || 0}</span></div>` +
+      `<div class="r"><span>Concluídos</span><span>${Number(o.resumo.concluidos) || 0}</span></div>` +
+      `<div class="r"><span>Previsto em caixa</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+      `</div>` +
+      (proximos ? `<h2>Próximos de hoje</h2><div class="hours">${proximos}</div>` : "") +
+      `<h2>Módulos</h2>` +
+      modulo("/painel/agenda", "Agenda", "Dia a dia, escolher data, confirmar e concluir") +
+      modulo("/painel/clientes", "Clientes", `Histórico, ticket médio e quem parou de voltar`, String(o.clientes)) +
+      modulo("/painel/equipe", "Equipe", "Quem tem acesso ao painel e com que papel") +
+      (o.sumidos > 0
+        ? `<a class="card" href="/painel/clientes?filtro=sumidos" style="border-color:var(--p)"><div class="row"><span class="t">Clientes sumidos</span><span class="price">${o.sumidos}</span></div><span class="d">Sem voltar há 45 dias ou mais — hora de chamar</span></a>`
+        : "") +
+      `<a class="ghost" href="/">Ver o site da barbearia</a><a class="ghost" href="/sair">Sair</a>`,
+  });
+}
+
+// Clientes: o histórico que o barbeiro usa para decidir quem chamar.
+function renderClientes(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  papel: string;
+  busca: string;
+  filtro: string;
+  clientes: Array<{
+    customer_id: string;
+    nome: string | null;
+    telefone: string | null;
+    visitas: number;
+    ultima_visita: string | null;
+    total_cents: number;
+    ticket_medio_cents: number;
+    dias_sem_voltar: number | null;
+  }>;
+}): string {
+  const semVoltar = (dias: number | null) => {
+    if (dias === null) return "nunca veio";
+    if (dias <= 0) return "atendimento futuro";
+    return `há ${dias} dia${dias === 1 ? "" : "s"}`;
+  };
+  const lista = o.clientes.length
+    ? o.clientes
+        .map((c) => {
+          const zap = String(c.telefone ?? "").replace(/\D/g, "");
+          const alerta = c.dias_sem_voltar !== null && c.dias_sem_voltar >= 45;
+          return (
+            `<div class="card"${alerta ? ' style="border-color:var(--p)"' : ""}>` +
+            `<div class="row"><span class="t">${escapeHtml(c.nome ?? "Cliente")}</span>` +
+            `<span class="price">${Number(c.visitas) || 0} visita${Number(c.visitas) === 1 ? "" : "s"}</span></div>` +
+            `<span class="d">${zap ? `<a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(c.telefone ?? "")}</a> · ` : ""}` +
+            `ticket ${escapeHtml(money(c.ticket_medio_cents))} · ${escapeHtml(semVoltar(c.dias_sem_voltar))}</span></div>`
+          );
+        })
+        .join("")
+    : `<p class="empty">${o.busca ? "Nenhum cliente com esse nome ou telefone." : "Nenhum cliente ainda."}</p>`;
+
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/clientes`,
+    title: `Clientes — ${o.nome}`,
+    description: `Clientes da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Clientes</h1><p class="sub">${o.clientes.length} na lista${o.busca ? ` · busca “${escapeHtml(o.busca)}”` : ""}</p>` +
+      `<form method="get" action="/painel/clientes" style="display:flex;gap:.5rem;margin:.75rem 0">` +
+      `<input name="q" value="${escapeHtml(o.busca)}" placeholder="nome ou telefone" aria-label="Buscar cliente" style="flex:1;min-width:0;padding:.65rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+      `<button type="submit" class="ghost" style="margin:0;padding:.6rem 1rem;cursor:pointer;font:inherit">Buscar</button></form>` +
+      `<div class="days" style="grid-template-columns:repeat(2,1fr);margin-bottom:.75rem">` +
+      `<a class="${o.filtro === "sumidos" ? "on" : ""}" href="/painel/clientes?filtro=sumidos">Sumidos 45+ dias</a>` +
+      `<a class="${o.filtro === "todos" ? "on" : ""}" href="/painel/clientes">Todos</a>` +
+      `</div>${lista}`,
+  });
+}
+
+
 // Quem entra aqui é membro da barbearia (memberships), não cliente. A permissão é
 // conferida no banco (server_api.set_appointment_status recebe o ator e valida o papel).
 
@@ -1134,6 +1259,47 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
         : undefined;
       return html(renderEquipe({ row, nome, canonical, papel, membros, erro }));
     }
+    if (path[0] === "painel" && path[1] === "agenda" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) {
+        const headers = new Headers({ location: "/painel/entrar" });
+        for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
+        return new Response(null, { status: 303, headers });
+      }
+      const busca = new URL(request.url).searchParams;
+      const diaBruto = busca.get("dia") ?? "";
+      const dia = /^\d{4}-\d{2}-\d{2}$/.test(diaBruto) ? diaBruto : todayIn(timezone);
+      const { from, to } = janelaDoDia(dia, timezone);
+      const [resumo, agenda] = await Promise.all([panelResumo(tenant.id, from, to), panelAgenda(tenant.id, from, to)]);
+      const erro = busca.get("erro") ? "Não foi possível mudar o status desse atendimento." : undefined;
+      return html(renderPainel({ row, nome, canonical, timezone, papel, dia, resumo, agenda, erro }));
+    }
+    if (path[0] === "painel" && path[1] === "clientes" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const busca = new URL(request.url).searchParams;
+      const termo = (busca.get("q") ?? "").trim();
+      const filtro = busca.get("filtro") === "sumidos" ? "sumidos" : "todos";
+      let clientes = await panelCustomers(tenant.id, userId, termo);
+      if (filtro === "sumidos") {
+        clientes = clientes.filter((c) => c.dias_sem_voltar !== null && c.dias_sem_voltar >= 45);
+      }
+      return html(renderClientes({ row, nome, canonical, timezone, papel, busca: termo, filtro, clientes }));
+    }
     if (path[0] === "painel" && path.length === 1) {
       const { accessToken, userId } = readSession(request);
       if (!accessToken || !userId) {
@@ -1148,13 +1314,28 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
         for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
         return new Response(null, { status: 303, headers });
       }
-      const busca = new URL(request.url).searchParams;
-      const diaBruto = busca.get("dia") ?? "";
-      const dia = /^\d{4}-\d{2}-\d{2}$/.test(diaBruto) ? diaBruto : todayIn(timezone);
-      const { from, to } = janelaDoDia(dia, timezone);
-      const [resumo, agenda] = await Promise.all([panelResumo(tenant.id, from, to), panelAgenda(tenant.id, from, to)]);
-      const erro = busca.get("erro") ? "Não foi possível mudar o status desse atendimento." : undefined;
-      return html(renderPainel({ row, nome, canonical, timezone, papel, dia, resumo, agenda, erro }));
+      const hoje = todayIn(timezone);
+      const { from, to } = janelaDoDia(hoje, timezone);
+      const [resumo, agenda, clientes] = await Promise.all([
+        panelResumo(tenant.id, from, to),
+        panelAgenda(tenant.id, from, to),
+        panelCustomers(tenant.id, userId),
+      ]);
+      const sumidos = clientes.filter((c) => c.dias_sem_voltar !== null && c.dias_sem_voltar >= 45).length;
+      return html(
+        renderVisaoGeral({
+          row,
+          nome,
+          canonical,
+          timezone,
+          papel,
+          dia: hoje,
+          resumo,
+          agenda,
+          clientes: clientes.length,
+          sumidos,
+        }),
+      );
     }
     if (path[0] === "sair" && path.length === 1) {
       const headers = new Headers({ location: "/" });

@@ -491,6 +491,31 @@ export async function setDailyGoal(tenantId: string, actorId: string, cents: num
   return Number(rows[0] ?? 0);
 }
 
+export type PainelCliente = {
+  customer_id: string;
+  nome: string | null;
+  telefone: string | null;
+  email: string | null;
+  visitas: number;
+  ultima_visita: string | null;
+  total_cents: number;
+  ticket_medio_cents: number;
+  dias_sem_voltar: number | null;
+};
+
+export async function panelCustomers(
+  tenantId: string,
+  actorId: string,
+  busca?: string,
+): Promise<PainelCliente[]> {
+  const linhas = await rpcServer<PainelCliente>("panel_customers", {
+    p_tenant: tenantId,
+    p_actor: actorId,
+    p_busca: busca && busca.trim() ? busca.trim() : null,
+  }).catch(() => []);
+  return linhas;
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {
