@@ -3,7 +3,7 @@ import { isSlugShape } from "@barberclub/config/slug";
 import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
 import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
-import { getTenantPublic, listServices, UpstreamError } from "@/server/tenant-public";
+import { getTenantPublic, listFreeSlots, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
 
 const NOT_FOUND_HTML =
   '<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="noindex"><title>Página não encontrada</title></head><body><main><p>Página não encontrada.</p></main></body></html>';
@@ -93,6 +93,285 @@ function whatsappLink(raw: unknown, name: string): string {
   return `https://wa.me/${digits}?text=${text}`;
 }
 
+// ---------- tema da barbearia (white-label) ----------
+// As três cores vêm de tenant_branding. Só aceita hex válido: cor vinda do banco
+// não pode injetar CSS. O texto sobre o acento é escolhido por luminância, senão
+// barbearia de marca clara fica com botão ilegível.
+function luminance(hex: string): number {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean.slice(0, 6);
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function themeOf(row: Record<string, unknown>): { primary: string; secondary: string; accent: string; onPrimary: string } {
+  const pick = (value: unknown, fallback: string) => {
+    const text = String(value ?? "").trim();
+    return /^#[0-9a-fA-F]{3,8}$/.test(text) ? text : fallback;
+  };
+  const primary = pick(row.color_primary, "#6deaed");
+  return {
+    primary,
+    secondary: pick(row.color_secondary, "#26262b"),
+    accent: pick(row.color_accent, "#9ca3af"),
+    onPrimary: luminance(primary) > 0.55 ? "#101012" : "#ffffff",
+  };
+}
+
+function appCss(t: { primary: string; secondary: string; accent: string; onPrimary: string }): string {
+  return `:root{color-scheme:dark;--p:${t.primary};--s:${t.secondary};--a:${t.accent};--on:${t.onPrimary};
+--bg:#101012;--surface:#191a1d;--surface2:#202127;--line:#2a2b31;--txt:#f4f4f5;--muted:#9b9ba4}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55;padding-bottom:5.5rem;-webkit-font-smoothing:antialiased}
+.wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
+header{position:sticky;top:0;z-index:10;background:rgba(16,16,18,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
+.logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:cover;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
+header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
+header .city{font-size:.72rem;color:var(--muted)}
+main{padding:1.1rem 0 2rem}
+h1{font-size:1.55rem;font-weight:700;letter-spacing:-.025em;margin:0 0 .25rem}
+.sub{color:var(--muted);font-size:.88rem;margin:0}
+h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--muted);margin:1.6rem 0 .6rem}
+.card{display:block;background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.9rem 1rem;text-decoration:none;color:inherit;margin-bottom:.55rem}
+.card:active{border-color:var(--p)}
+.card .row{display:flex;justify-content:space-between;gap:.75rem;align-items:baseline}
+.card .t{font-weight:600;font-size:.95rem}
+.card .d{color:var(--muted);font-size:.78rem;margin-top:.15rem}
+.card .price{font-weight:700;white-space:nowrap;color:var(--p)}
+.cta{display:block;text-align:center;text-decoration:none;background:var(--p);color:var(--on);font-weight:700;font-size:.95rem;padding:.9rem 1rem;border-radius:.9rem;margin:1rem 0 .5rem}
+.ghost{display:block;text-align:center;text-decoration:none;border:1px solid var(--line);background:var(--surface);color:var(--txt);font-weight:500;font-size:.88rem;padding:.8rem 1rem;border-radius:.9rem;margin:.5rem 0}
+.team{display:flex;gap:.6rem;overflow-x:auto;padding-bottom:.25rem}
+.team .who{min-width:5.5rem;text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.75rem .5rem;font-size:.76rem;font-weight:500}
+.avatar{width:2.5rem;height:2.5rem;border-radius:9999px;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;margin:0 auto .4rem;border:1px solid var(--line)}
+.hours{background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.2rem .9rem}
+.hours .r{display:flex;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid var(--line);font-size:.85rem}
+.hours .r:last-child{border-bottom:0}
+.hours .off{color:#6b6b74}
+.days{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem}
+.days a{background:var(--surface);border:1px solid var(--line);border-radius:.8rem;padding:.6rem .3rem;text-align:center;text-decoration:none;color:inherit;font-size:.74rem;line-height:1.3}
+.days a.on{background:var(--p);color:var(--on);border-color:var(--p)}
+.slots{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem}
+.slots a{background:var(--surface);border:1px solid var(--line);border-radius:.7rem;padding:.65rem 0;text-align:center;text-decoration:none;color:inherit;font-size:.9rem;font-weight:600}
+.slots a:active{background:var(--p);color:var(--on);border-color:var(--p)}
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:1rem;padding:1rem;color:var(--muted);font-size:.86rem}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:20;background:rgba(25,26,29,.96);backdrop-filter:blur(8px);border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs a{flex:1;text-align:center;padding:.6rem 0 .7rem;text-decoration:none;color:#6f6f79;font-size:.66rem;font-weight:600}
+nav.tabs a.on{color:var(--p)}
+nav.tabs .ico{display:block;font-size:1.05rem;line-height:1.25}
+footer{padding:1.5rem 0 1rem;text-align:center;color:#5e5e67;font-size:.7rem}
+footer a{color:var(--muted);text-decoration:none}`;
+}
+
+const DIAS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function fmtTime(iso: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(new Date(iso));
+  } catch {
+    return iso.slice(11, 16);
+  }
+}
+
+function fmtDay(iso: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", timeZone: timezone }).format(new Date(iso));
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+type Crumb = { label: string; href: string };
+
+function appPage(options: {
+  row: Record<string, unknown>;
+  name: string;
+  canonical: string;
+  title: string;
+  description: string;
+  body: string;
+  nav: "inicio" | "agendar";
+  crumbs?: Crumb[];
+}): string {
+  const theme = themeOf(options.row);
+  const city = String(options.row.city ?? "").trim();
+  const logo = String(options.row.logo_url ?? "").trim();
+  const logoHtml = /^https:\/\//.test(logo)
+    ? `<img class="logo" src="${escapeHtml(logo)}" alt="">`
+    : `<span class="logo">${escapeHtml(initials(options.name))}</span>`;
+  const crumbs = (options.crumbs ?? [])
+    .map((crumb) => `<a class="ghost" href="${escapeHtml(crumb.href)}">${escapeHtml(crumb.label)}</a>`)
+    .join("");
+  const nav = (key: "inicio" | "agendar", label: string, icon: string, href: string) =>
+    `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
+}
+
+
+function hoursApp(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const table = raw as Record<string, unknown>;
+  const rows = WEEKDAYS.map(([key, label]) => {
+    const value = typeof table[key] === "string" ? String(table[key]).trim() : "";
+    return value
+      ? `<div class="r"><span>${label}</span><span>${escapeHtml(value)}</span></div>`
+      : `<div class="r"><span>${label}</span><span class="off">Fechado</span></div>`;
+  }).join("");
+  return `<h2>Horários</h2><div class="hours">${rows}</div>`;
+}
+
+function todayIn(timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function nextDays(fromIso: string, count: number): string[] {
+  const base = Date.parse(`${fromIso}T12:00:00Z`);
+  const days: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    days.push(new Date(base + index * 86_400_000).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+function renderHome(o: {
+  row: Record<string, unknown>;
+  slug: string;
+  nome: string;
+  timezone: string;
+  canonical: string;
+  services: Awaited<ReturnType<typeof listServices>>;
+  staff: Awaited<ReturnType<typeof listStaff>>;
+}): string {
+  const address = String(o.row.address_line ?? "").trim();
+  const city = String(o.row.city ?? "").trim();
+  const state = String(o.row.state ?? "").trim();
+  const local = [address, [city, state].filter(Boolean).join("/")].filter(Boolean).join(" — ");
+  const wa = whatsappLink(o.row.whatsapp_public, o.nome);
+  const cards = o.services.length
+    ? o.services
+        .map(
+          (service) =>
+            `<a class="card" href="/agendar?servico=${escapeHtml(service.service_id)}"><div class="row"><span class="t">${escapeHtml(service.name)}</span><span class="price">${escapeHtml(money(service.price_cents))}</span></div><span class="d">${Number(service.duration_min)} min${
+              service.description ? ` · ${escapeHtml(String(service.description))}` : ""
+            }</span></a>`,
+        )
+        .join("")
+    : `<p class="empty">Os serviços estão sendo cadastrados.</p>`;
+  const team = o.staff.length
+    ? `<h2>Equipe</h2><div class="team">${o.staff
+        .map((member) => `<div class="who"><div class="avatar">${escapeHtml(initials(member.display_name))}</div>${escapeHtml(member.display_name)}</div>`)
+        .join("")}</div>`
+    : "";
+  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: o.canonical,
+    title: city ? `${o.nome} — ${city}` : o.nome,
+    description: `${o.nome}${city ? ` em ${city}` : ""}. Veja os serviços, os horários e agende seu atendimento.`,
+    body,
+    nav: "inicio",
+  });
+}
+
+async function renderBooking(o: {
+  request: Request;
+  row: Record<string, unknown>;
+  slug: string;
+  nome: string;
+  timezone: string;
+  canonical: string;
+}): Promise<string> {
+  const params = new URL(o.request.url).searchParams;
+  const servico = (params.get("servico") ?? "").trim();
+  const dia = (params.get("dia") ?? "").trim();
+  const hora = (params.get("hora") ?? "").trim();
+  const services = await listServices(o.slug);
+  const base = {
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}agendar`,
+    title: `Agendar — ${o.nome}`,
+    description: `Escolha serviço, dia e horário na ${o.nome}.`,
+    nav: "agendar" as const,
+  };
+
+  if (!services.length) {
+    return appPage({ ...base, body: `<h1>Agendar</h1><p class="empty">Os serviços estão sendo cadastrados. Fale com a barbearia para marcar.</p>` });
+  }
+
+  const service = services.find((item) => item.service_id === servico);
+  if (!service) {
+    const list = services
+      .map(
+        (item) =>
+          `<a class="card" href="/agendar?servico=${escapeHtml(item.service_id)}"><div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${escapeHtml(money(item.price_cents))}</span></div><span class="d">${Number(item.duration_min)} min</span></a>`,
+      )
+      .join("");
+    return appPage({ ...base, body: `<h1>Escolha o serviço</h1><p class="sub">Passo 1 de 3</p>${list}` });
+  }
+
+  const serviceLabel = escapeHtml(service.name);
+  const back = `<a class="ghost" href="/agendar">Trocar serviço</a>`;
+
+  if (!dia) {
+    const days = nextDays(todayIn(o.timezone), 14);
+    const grid = days
+      .map((day) => {
+        const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+        return `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${day}">${escapeHtml(DIAS[weekday])}<br>${day.slice(8, 10)}/${day.slice(5, 7)}</a>`;
+      })
+      .join("");
+    return appPage({
+      ...base,
+      body: `<h1>${serviceLabel}</h1><p class="sub">Passo 2 de 3 · escolha o dia</p><div class="days">${grid}</div>${back}`,
+    });
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) {
+    return appPage({ ...base, body: `<h1>${serviceLabel}</h1><p class="empty">Dia inválido.</p>${back}` });
+  }
+
+  const slots = await listFreeSlots(o.slug, service.service_id, dia);
+  const dayLabel = fmtDay(`${dia}T12:00:00Z`, o.timezone);
+
+  if (hora) {
+    const chosen = slots.find((slot) => slot.starts_at === hora);
+    const label = chosen ? fmtTime(chosen.starts_at, o.timezone) : hora.slice(11, 16);
+    return appPage({
+      ...base,
+      body: `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)} às ${escapeHtml(label)}</p><div class="card"><div class="row"><span class="t">${escapeHtml(service.name)}</span><span class="price">${escapeHtml(money(service.price_cents))}</span></div><span class="d">${Number(service.duration_min)} min</span></div><p class="empty">Para confirmar, o cliente entra com o próprio e-mail. O login do cliente é o próximo passo da Etapa 2 — <strong>este horário ainda não foi reservado</strong>.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}">Escolher outro horário</a>`,
+    });
+  }
+
+  const grid = slots.length
+    ? slots
+        .map(
+          (slot) =>
+            `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(slot.starts_at)}">${escapeHtml(fmtTime(slot.starts_at, o.timezone))}</a>`,
+        )
+        .join("")
+    : "";
+  const body = grid
+    ? `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · ${escapeHtml(dayLabel)}</p><div class="slots">${grid}</div><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`
+    : `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)}</p><p class="empty">Nenhum horário livre neste dia. Escolha outro dia.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`;
+  return appPage({ ...base, body });
+}
+
 export async function GET(request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
   const { path } = await context.params;
   const cfg = loadConfig();
@@ -108,11 +387,19 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
     throw error;
   }
   if (!row) return neutral();
-  if (path && path.length > 0) return neutral();
+  const timezone = String(row.timezone ?? "America/Sao_Paulo").trim() || "America/Sao_Paulo";
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
-  const name = escapeHtml(nome);
+  if (path && path.length > 0) {
+    if (path[0] !== "agendar" || path.length > 1) return neutral();
+    const pagina = await renderBooking({ request, row, slug, nome, timezone, canonical });
+    return new Response(pagina, {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
   const services = await listServices(slug);
+  const name = escapeHtml(nome);
   const wa = whatsappLink(row.whatsapp_public, nome);
   const phone = String(row.phone_public ?? "").trim();
   const city = String(row.city ?? "").trim();
@@ -121,19 +408,16 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const local = [address, [city, state].filter(Boolean).join("/")].filter(Boolean).join(" — ");
   const policy = String(row.booking_policy_text ?? "").trim();
   const cta = [
+    `<a class="btn btn-primary" href="/agendar">Agendar horário</a>`,
     wa
-      ? `<a class="btn btn-primary" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Marcar horário no WhatsApp</a>`
+      ? `<a class="btn btn-ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>`
       : "",
     phone
       ? `<a class="btn btn-ghost" href="tel:${escapeHtml(phone.replace(/[^\d+]/g, ""))}">Ligar — ${escapeHtml(phone)}</a>`
       : "",
   ].join("");
-  const title = escapeHtml(city ? `${nome} — ${city}` : nome);
-  const description = escapeHtml(
-    `${nome}${city ? ` em ${city}` : ""}. Veja os serviços, os horários e marque seu atendimento.`,
-  );
-  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="index,follow"><title>${title}</title><meta name="description" content="${description}"><link rel="canonical" href="${escapeHtml(canonical)}"><style>${STYLE}</style></head><body><header><div class="wrap"><i aria-hidden="true"></i>${name}</div></header><main><div class="wrap"><h1>${name}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${cta ? `<div class="cta">${cta}</div>` : ""}${servicesBlock(services, wa)}${hoursBlock(row.opening_hours)}${policy ? `<p class="note">${escapeHtml(policy)}</p>` : ""}</div></main><footer><div class="wrap"><a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
-  return new Response(html, {
+  const pagina = renderHome({ row, slug, nome, timezone, canonical, services, staff: await listStaff(slug) });
+  return new Response(pagina, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });

@@ -114,6 +114,54 @@ export async function listServices(slug: string): Promise<ServicePublic[]> {
   }
 }
 
+// Equipe e horários livres: mesmas RPCs públicas (anon EXECUTE).
+export type StaffPublic = { staff_id: string; display_name: string; photo_url: string | null; short_bio: string | null };
+export type SlotPublic = { staff_id: string; starts_at: string; ends_at: string };
+
+async function rpcPublic<T>(fn: string, cols: string, body: Record<string, unknown>): Promise<T[]> {
+  const url = process.env[["SUPABASE", "URL"].join("_")];
+  const key = process.env[["SUPABASE", "PUBLISHABLE", "KEY"].join("_")];
+  if (!url || !key) return [];
+  const response = await fetch(`${url.replace(/\/$/, "")}/rest/v1/rpc/${fn}?select=${cols}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      "content-profile": "public_api",
+      "accept-profile": "public_api",
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!response.ok) return [];
+  const rows: unknown = await response.json();
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
+export async function listStaff(slug: string): Promise<StaffPublic[]> {
+  try {
+    return await rpcPublic<StaffPublic>("list_staff", "staff_id,display_name,photo_url,short_bio", { p_slug: slug });
+  } catch {
+    return [];
+  }
+}
+
+// janela de 14 dias, um dia por chamada: a RPC aceita p_day e devolve slot a slot
+export async function listFreeSlots(slug: string, serviceId: string, day: string, staffId?: string): Promise<SlotPublic[]> {
+  try {
+    return await rpcPublic<SlotPublic>("list_free_slots", "staff_id,starts_at,ends_at", {
+      p_slug: slug,
+      p_service: serviceId,
+      p_staff: staffId ?? null,
+      p_day: day,
+    });
+  } catch {
+    return [];
+  }
+}
+
 export function forgetTenant(slug: string): void {
   negative.delete(slug);
 }
