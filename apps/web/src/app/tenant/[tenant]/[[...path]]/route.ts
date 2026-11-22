@@ -512,11 +512,33 @@ function renderPainel(o: {
     `<div class="r"><span>Previsto em caixa</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
     `</div>`;
 
+  // Semana do dia escolhido, começando na segunda (semana brasileira) e indo até
+  // domingo. O campo de data abre o calendário nativo do celular, que traz o mês —
+  // é o jeito de escolher dia e mês sem inventar um calendário em HTML puro.
+  const segundaDaSemana = (() => {
+    const d = new Date(`${o.dia}T12:00:00Z`);
+    const dow = d.getUTCDay();
+    d.setUTCDate(d.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
+    return d.toISOString().slice(0, 10);
+  })();
+  const semana = Array.from({ length: 7 }, (_, i) => somaDia(segundaDaSemana, i))
+    .map((dia) => {
+      const dow = new Date(`${dia}T12:00:00Z`).getUTCDay();
+      const curto = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"][dow];
+      return `<a class="${dia === o.dia ? "on" : ""}" href="/painel?dia=${dia}">${curto}<br>${dia.slice(8, 10)}</a>`;
+    })
+    .join("");
+
   const nav =
+    `<form method="get" action="/painel" style="display:flex;gap:.5rem;margin-bottom:.6rem">` +
+    `<input type="date" name="dia" value="${escapeHtml(o.dia)}" aria-label="Escolher o dia" style="flex:1;min-width:0;padding:.65rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+    `<button type="submit" class="ghost" style="margin:0;padding:.6rem 1rem;cursor:pointer;font:inherit">Ver dia</button>` +
+    `</form>` +
+    `<div class="days" style="grid-template-columns:repeat(7,1fr);gap:.35rem;margin-bottom:.6rem">${semana}</div>` +
     `<div class="days" style="grid-template-columns:repeat(3,1fr);margin-bottom:.75rem">` +
-    `<a href="/painel?dia=${somaDia(o.dia, -1)}">Ontem<br>${somaDia(o.dia, -1).slice(8, 10)}/${somaDia(o.dia, -1).slice(5, 7)}</a>` +
-    `<a class="${o.dia === hoje ? "on" : ""}" href="/painel?dia=${hoje}">Hoje<br>${hoje.slice(8, 10)}/${hoje.slice(5, 7)}</a>` +
-    `<a href="/painel?dia=${somaDia(o.dia, 1)}">Amanhã<br>${somaDia(o.dia, 1).slice(8, 10)}/${somaDia(o.dia, 1).slice(5, 7)}</a>` +
+    `<a href="/painel?dia=${somaDia(o.dia, -1)}">◀ Ontem</a>` +
+    `<a class="${o.dia === hoje ? "on" : ""}" href="/painel?dia=${hoje}">Hoje</a>` +
+    `<a href="/painel?dia=${somaDia(o.dia, 1)}">Amanhã ▶</a>` +
     `</div>`;
 
   const lista = o.agenda.length
