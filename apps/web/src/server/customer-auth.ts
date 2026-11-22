@@ -90,7 +90,12 @@ async function rpcServer<T>(fn: string, body: Record<string, unknown>): Promise<
     cache: "no-store",
     signal: AbortSignal.timeout(6000),
   });
-  if (!response.ok) throw new Error(`server_api.${fn} ${response.status}`);
+  // O corpo do erro do banco traz o motivo real (só_dono_cria_dono, sem_permissao);
+  // sem ele, todo erro virava "falhou" e o usuário não sabia o que corrigir.
+  if (!response.ok) {
+    const corpo = await response.text().catch(() => "");
+    throw new Error(`server_api.${fn} ${response.status} ${corpo.slice(0, 300)}`);
+  }
   const json: unknown = await response.json();
   // Função que retorna TABLE devolve array; função que retorna escalar (text, bigint)
   // devolve o valor solto. Tratar só array fazia panel_role virar null e o barbeiro
@@ -380,6 +385,110 @@ export async function customerCashback(tenantId: string, userId: string): Promis
     p_user: userId,
   }).catch(() => []);
   return { balance_cents: Number(rows[0]?.balance_cents ?? 0), entries: rows[0]?.entries ?? [] };
+}
+
+// --- equipe: convite, papéis e meta ---------------------------------------------
+
+async function adminSetPassword(userId: string, password: string): Promise<boolean> {
+  const { status } = await adminCall(`users/${userId}`, "PUT", { password });
+  return status === 200;
+}
+
+export type Membro = { user_id: string; email: string; full_name: string | null; role: string; status: string };
+
+export async function listMembers(tenantId: string, actorId: string): Promise<Membro[]> {
+  return rpcServer<Membro>("list_members", { p_tenant: tenantId, p_actor: actorId }).catch(() => []);
+}
+
+export function inviteCode(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Cria (ou reaproveita) a conta do convidado e grava o convite. A senha aleatória aqui
+// não serve para entrar: quem define a senha é o convidado, ao abrir o link.
+export async function convidarMembro(o: {
+  tenantId: string;
+  actorId: string;
+  email: string;
+  nome: string;
+  role: string;
+}): Promise<{ ok: true; code: string; expires: string } | { ok: false; reason: string }> {
+  const email = String(o.email ?? "").trim().toLowerCase();
+  if (!emailOk(email)) return { ok: false, reason: "email_invalido" };
+  if (!["owner", "manager", "staff"].includes(o.role)) return { ok: false, reason: "papel_invalido" };
+
+  try {
+    const existentes = await rpcServer<{ id: string }>("find_auth_user", { p_email: email }).catch(() => []);
+    let userId = existentes[0]?.id ?? null;
+    if (!userId) {
+      const criado = await createUser(email, `tmp-${inviteCode()}`, o.nome, "");
+      if (!criado.id) return { ok: false, reason: "falha" };
+      userId = criado.id;
+    }
+    const code = inviteCode();
+    const linhas = await rpcServer<string>("create_invite", {
+      p_actor: o.actorId,
+      p_tenant: o.tenantId,
+      p_user: userId,
+      p_role: o.role,
+      p_code: code,
+      p_days: 7,
+    });
+    return { ok: true, code, expires: String(linhas[0] ?? "") };
+  } catch (error) {
+    const texto = String((error as Error)?.message ?? "");
+    if (texto.includes("só_dono_cria_dono") || texto.includes("42501")) return { ok: false, reason: "sem_permissao" };
+    return { ok: false, reason: "falha" };
+  }
+}
+
+// Consome o convite (uso único) e devolve quem é. Não usar para "validar": consumir é
+// o próprio ato de aceitar, e chamar duas vezes invalida o convite.
+
+// Aceita o convite: consome o código, define a senha do convidado, ativa a membership
+// e devolve a sessão já aberta.
+export async function aceitarConvite(o: {
+  slug: string;
+  code: string;
+  password: string;
+}): Promise<{ ok: true; session: Session } | { ok: false; reason: string }> {
+  if (!passwordOk(o.password)) return { ok: false, reason: "senha_curta" };
+  try {
+    const rows = await rpcServer<{ user_id: string; tenant_id: string; role: string }>("consume_invite", {
+      p_slug: o.slug,
+      p_code: o.code,
+    }).catch(() => []);
+    const convite = rows[0];
+    if (!convite?.user_id) return { ok: false, reason: "convite_invalido" };
+
+    const usuario = await adminCall(`users/${convite.user_id}`, "GET", undefined).catch(() => ({ status: 0, json: null }));
+    const email = (usuario.json as { email?: string } | null)?.email ?? "";
+    if (!email) return { ok: false, reason: "falha" };
+    if (!(await adminSetPassword(convite.user_id, o.password))) return { ok: false, reason: "falha" };
+    await rpcServer<string>("activate_member", { p_tenant: convite.tenant_id, p_user: convite.user_id }).catch(() => []);
+
+    const session = await signIn(email, o.password);
+    if (!session) return { ok: false, reason: "falha" };
+    return { ok: true, session };
+  } catch {
+    return { ok: false, reason: "falha" };
+  }
+}
+
+export async function revogarMembro(tenantId: string, actorId: string, userId: string): Promise<boolean> {
+  try {
+    const rows = await rpcServer<string>("revoke_member", { p_tenant: tenantId, p_actor: actorId, p_user: userId });
+    return rows[0] === "revoked";
+  } catch {
+    return false;
+  }
+}
+
+export async function setDailyGoal(tenantId: string, actorId: string, cents: number): Promise<number> {
+  const rows = await rpcServer<number>("set_daily_goal", { p_tenant: tenantId, p_actor: actorId, p_cents: cents }).catch(() => []);
+  return Number(rows[0] ?? 0);
 }
 
 // --- cookies -------------------------------------------------------------------

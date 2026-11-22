@@ -5,23 +5,28 @@ import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
 import { getTenantPublic, listFreeSlots, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
 import {
+  aceitarConvite,
   bookWithSession,
   cadastrar,
   clearSessionHeaders,
   confirmAppointment,
+  convidarMembro,
   creditCashback,
   customerAppointments,
   customerCashback,
   customerMe,
   entrar,
   idempotencyKeyFor,
+  listMembers,
   loginStaff,
   panelAgenda,
   panelResumo,
   panelRole,
   readSession,
+  revogarMembro,
   sessionHeaders,
   setAppointmentStatus,
+  setDailyGoal,
   tenantBySlug,
 } from "@/server/customer-auth";
 
@@ -240,6 +245,7 @@ function appPage(options: {
   const abas =
     options.shell === "painel"
       ? `<a class="on" href="/painel"><span class="ico">▤</span>Agenda</a>` +
+        `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>` +
         `<a href="/"><span class="ico">⌂</span>Site</a>` +
         `<a href="/sair"><span class="ico">⎋</span>Sair</a>`
       : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}`;
@@ -425,6 +431,77 @@ async function renderBooking(o: {
     ? `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · ${escapeHtml(dayLabel)}</p><div class="slots">${grid}</div><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`
     : `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)}</p><p class="empty">Nenhum horário livre neste dia. Escolha outro dia.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`;
   return appPage({ ...base, body });
+}
+
+function renderEquipe(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  papel: string;
+  membros: Array<{ user_id: string; email: string; full_name: string | null; role: string; status: string }>;
+  link?: string;
+  erro?: string;
+}): string {
+  const erro = o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "";
+  const caixaLink = o.link
+    ? `<div class="card" style="border-color:var(--p)"><div class="t">Convite criado</div>` +
+      `<span class="d">Mande este link para a pessoa. Ela define a senha e entra. Vale 7 dias, uma vez só.</span>` +
+      `<p style="word-break:break-all;font-size:.78rem;color:var(--p);margin:.5rem 0">${escapeHtml(o.link)}</p>` +
+      `<a class="ghost" href="https://wa.me/?text=${encodeURIComponent(`Acesso ao painel da ${o.nome}: ${o.link}`)}" target="_blank" rel="noopener noreferrer">Mandar no WhatsApp</a></div>`
+    : "";
+  const lista = o.membros.length
+    ? o.membros
+        .map(
+          (m) =>
+            `<div class="card"><div class="row"><span class="t">${escapeHtml(m.full_name ?? m.email)}</span>` +
+            `<span class="price">${escapeHtml(m.role)}</span></div>` +
+            `<span class="d">${escapeHtml(m.email)} · ${escapeHtml(m.status)}</span>` +
+            (m.status === "active" && m.role !== "owner"
+              ? `<form method="post" action="/painel/equipe/revogar" style="display:inline"><input type="hidden" name="membro" value="${escapeHtml(m.user_id)}">` +
+                `<button type="submit" class="ghost" style="display:inline-block;margin:.35rem .35rem 0 0;padding:.4rem .75rem;font-size:.74rem;cursor:pointer">Revogar acesso</button></form>`
+              : "") +
+            `</div>`,
+        )
+        .join("")
+    : `<p class="empty">Ninguém além de você.</p>`;
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel`,
+    title: `Equipe — ${o.nome}`,
+    description: `Quem tem acesso ao painel da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Equipe</h1><p class="sub">Quem trabalha aqui · você é ${escapeHtml(o.papel)}</p>${erro}${caixaLink}` +
+      `<h2>Quem tem acesso</h2>${lista}` +
+      `<h2>Convidar</h2><form method="post" action="/painel/equipe/convidar"><div class="card">` +
+      `<label class="d" for="nome2">Nome</label><input id="nome2" name="nome" required maxlength="80" ${CAMPO}>` +
+      `<label class="d" for="email3">E-mail</label><input id="email3" name="email" required type="email" maxlength="254" ${CAMPO}>` +
+      `<label class="d" for="papel">Papel</label><select id="papel" name="papel" ${CAMPO}>` +
+      `<option value="staff">Barbeiro — só os próprios atendimentos</option>` +
+      `<option value="manager">Gerente — agenda e equipe</option>` +
+      `<option value="owner">Dono — tudo</option></select>` +
+      `</div><button class="cta" type="submit">Gerar link de convite</button></form>` +
+      `<a class="ghost" href="/painel">Voltar para a agenda</a>`,
+  });
+}
+
+function renderConvite(o: { row: Record<string, unknown>; nome: string; canonical: string; code: string; erro?: string }): string {
+  const erro = o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "";
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel`,
+    title: `Convite — ${o.nome}`,
+    description: `Defina sua senha para acessar o painel da ${o.nome}.`,
+    body:
+      `<h1>Você foi convidado</h1><p class="sub">Defina sua senha para entrar no painel da ${escapeHtml(o.nome)}.</p>${erro}` +
+      `<form method="post" action="/painel/convite"><div class="card">` +
+      `<input type="hidden" name="c" value="${escapeHtml(o.code)}">` +
+      `<label class="d" for="s1">Senha (mínimo 8 caracteres)</label><input id="s1" name="senha" required type="password" minlength="8" autocomplete="new-password" ${CAMPO}>` +
+      `<label class="d" for="s2">Repita a senha</label><input id="s2" name="senha2" required type="password" minlength="8" autocomplete="new-password" ${CAMPO.replace(".85rem", ".2rem")}>` +
+      `</div><button class="cta" type="submit">Entrar no painel</button></form>`,
+  });
 }
 
 // ---------- painel do barbeiro ----------
@@ -805,6 +882,70 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
   }
   const texto = (chave: string) => String(form.get(chave) ?? "").trim();
 
+  if (path?.[0] === "painel" && path[1] === "convite" && path.length === 2) {
+    const code = texto("c");
+    if (texto("senha") !== texto("senha2")) {
+      return html(renderConvite({ row, nome, canonical, code, erro: "As duas senhas não são iguais." }), 400);
+    }
+    const aceito = await aceitarConvite({ slug, code, password: texto("senha") });
+    if (!aceito.ok) {
+      const mensagem =
+        aceito.reason === "senha_curta"
+          ? "A senha precisa de pelo menos 8 caracteres."
+          : "Este convite não vale mais. Peça outro a quem te convidou.";
+      return html(renderConvite({ row, nome, canonical, code, erro: mensagem }), 400);
+    }
+    const headers = new Headers({ location: "/painel" });
+    for (const item of sessionHeaders(aceito.session)) headers.append("set-cookie", item);
+    return new Response(null, { status: 303, headers });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "convidar") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const papel = await panelRole(tenant.id, userId);
+    if (!papel) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const convite = await convidarMembro({
+      tenantId: tenant.id,
+      actorId: userId,
+      email: texto("email"),
+      nome: texto("nome"),
+      role: texto("papel"),
+    });
+    const membros = await listMembers(tenant.id, userId);
+    if (!convite.ok) {
+      const mensagem =
+        convite.reason === "email_invalido"
+          ? "E-mail inválido."
+          : convite.reason === "sem_permissao"
+            ? "Só o dono pode convidar outro dono."
+            : "Não foi possível criar o convite.";
+      return html(renderEquipe({ row, nome, canonical, papel, membros, erro: mensagem }), 400);
+    }
+    const link = `${canonical}painel/convite?c=${convite.code}`;
+    return html(renderEquipe({ row, nome, canonical, papel, membros, link }));
+  }
+
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "revogar") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const ok = await revogarMembro(tenant.id, userId, texto("membro"));
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: ok ? "/painel/equipe" : "/painel/equipe?erro=1" }),
+    });
+  }
+
   if (path?.[0] === "painel" && path[1] === "entrar" && path.length === 2) {
     const login = await loginStaff({ email: texto("email"), password: texto("senha") });
     if (!login.ok || !login.session) {
@@ -968,6 +1109,30 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   if (path && path.length > 0) {
     if (path[0] === "painel" && path[1] === "entrar") {
       return html(renderPainelEntrar({ row, nome, canonical }));
+    }
+    if (path[0] === "painel" && path[1] === "convite" && path.length === 2) {
+      const code = (new URL(request.url).searchParams.get("c") ?? "").trim();
+      return html(renderConvite({ row, nome, canonical, code }));
+    }
+    if (path[0] === "painel" && path[1] === "equipe" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const membros = await listMembers(tenant.id, userId);
+      const busca = new URL(request.url).searchParams;
+      const erro = busca.get("erro")
+        ? busca.get("erro") === "permissao"
+          ? "Só dono ou gerente pode mexer na equipe."
+          : "Não foi possível concluir a operação."
+        : undefined;
+      return html(renderEquipe({ row, nome, canonical, papel, membros, erro }));
     }
     if (path[0] === "painel" && path.length === 1) {
       const { accessToken, userId } = readSession(request);
