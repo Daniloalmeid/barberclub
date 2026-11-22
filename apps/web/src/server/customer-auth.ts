@@ -866,6 +866,104 @@ export async function cashbackExtrato(tenantId: string, userId: string): Promise
   return rpcServer<LancamentoBbt>("customer_cashback_extrato", { p_tenant: tenantId, p_user: userId }).catch(() => []);
 }
 
+
+// --- despesas e comissões -------------------------------------------------------
+
+export type Despesa = {
+  expense_id: string;
+  description: string;
+  category: string;
+  amount_cents: number;
+  method: string;
+  spent_on: string;
+};
+
+export type ResultadoMes = {
+  recebido_cents: number;
+  despesas_cents: number;
+  comissoes_cents: number;
+  bbt_concedido_cents: number;
+  sobrou_cents: number;
+};
+
+export type Comissao = {
+  staff_id: string;
+  staff_name: string;
+  commission_bps: number;
+  atendimentos: number;
+  base_cents: number;
+  comissao_cents: number;
+};
+
+export async function panelExpenses(tenantId: string, from: string, to: string): Promise<Despesa[]> {
+  return rpcServer<Despesa>("panel_expenses", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+}
+
+export async function addExpense(o: {
+  actorId: string;
+  tenantId: string;
+  descricao: string;
+  categoria: string;
+  valorCents: number;
+  data: string;
+  meio: string;
+}): Promise<boolean> {
+  try {
+    await rpcServer("add_expense", {
+      p_actor: o.actorId,
+      p_tenant: o.tenantId,
+      p_description: o.descricao,
+      p_category: o.categoria,
+      p_amount_cents: Math.round(o.valorCents),
+      p_spent_on: o.data,
+      p_method: o.meio,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cancelExpense(actorId: string, tenantId: string, expenseId: string): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("cancel_expense", { p_actor: actorId, p_tenant: tenantId, p_expense: expenseId });
+    return linhas[0] === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function panelCommissions(tenantId: string, from: string, to: string): Promise<Comissao[]> {
+  return rpcServer<Comissao>("panel_commissions", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+}
+
+export async function setCommission(actorId: string, tenantId: string, staffId: string, bps: number): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<number>("set_commission", {
+      p_actor: actorId,
+      p_tenant: tenantId,
+      p_staff: staffId,
+      p_bps: Math.round(bps),
+    });
+    return Number(linhas[0]) === Math.round(bps);
+  } catch {
+    return false;
+  }
+}
+
+const RESULTADO_ZERO: ResultadoMes = {
+  recebido_cents: 0,
+  despesas_cents: 0,
+  comissoes_cents: 0,
+  bbt_concedido_cents: 0,
+  sobrou_cents: 0,
+};
+
+export async function panelResultado(tenantId: string, from: string, to: string): Promise<ResultadoMes> {
+  const linhas = await rpcServer<Resultado>("panel_resultado", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+  return { ...RESULTADO_ZERO, ...(linhas[0] ?? {}) };
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {

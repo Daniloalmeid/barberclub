@@ -21,14 +21,20 @@ import {
   loginStaff,
   panelAgenda,
   abandonarCliente,
+  addExpense,
   blockTime,
   bookForCustomer,
+  cancelExpense,
   clienteDeBalcao,
   panelBlocks,
+  panelCommissions,
   panelCustomers,
+  panelExpenses,
   panelFinanceiro,
+  panelResultado,
   panelServices,
   panelResumo,
+  setCommission,
   panelRole,
   debitCashback,
   readSession,
@@ -456,7 +462,9 @@ function renderEquipe(o: {
   canonical: string;
   papel: string;
   membros: Array<{ user_id: string; email: string; full_name: string | null; role: string; status: string }>;
+  comissoes?: Array<{ staff_id: string; staff_name: string; commission_bps: number; atendimentos: number; base_cents: number; comissao_cents: number }>;
   link?: string;
+  ok?: string;
   erro?: string;
 }): string {
   const erro = o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "";
@@ -466,6 +474,22 @@ function renderEquipe(o: {
       `<p style="word-break:break-all;font-size:.78rem;color:var(--p);margin:.5rem 0">${escapeHtml(o.link)}</p>` +
       `<a class="ghost" href="https://wa.me/?text=${encodeURIComponent(`Acesso ao painel da ${o.nome}: ${o.link}`)}" target="_blank" rel="noopener noreferrer">Mandar no WhatsApp</a></div>`
     : "";
+
+  const comissoesBloco =
+    `<h2>Comissões</h2><p class="d" style="color:var(--muted);font-size:.72rem;margin:0 0 .4rem">Percentual sobre o preço do serviço nos atendimentos concluídos do mês.</p>` +
+    (o.comissoes ?? [])
+      .map(
+        (c) =>
+          `<form method="post" action="/painel/comissao" class="card">` +
+          `<input type="hidden" name="profissional" value="${escapeHtml(c.staff_id)}">` +
+          `<div class="row"><span class="t">${escapeHtml(c.staff_name)}</span><span class="price">${escapeHtml(money(c.comissao_cents))}</span></div>` +
+          `<span class="d">${Number(c.atendimentos) || 0} atendimentos · base ${escapeHtml(money(c.base_cents))}</span>` +
+          `<label class="d" for="pc_${c.staff_id}">Comissão (%)</label>` +
+          `<input id="pc_${c.staff_id}" name="percentual" inputmode="decimal" value="${(Number(c.commission_bps) / 100).toFixed(2).replace(".", ",")}" style="width:100%;margin:.2rem 0 .4rem;padding:.5rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.85rem">` +
+          `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">Salvar percentual</button></form>`,
+      )
+      .join("");
+
   const lista = o.membros.length
     ? o.membros
         .map(
@@ -491,6 +515,7 @@ function renderEquipe(o: {
     body:
       `<h1>Equipe</h1><p class="sub">Quem trabalha aqui · você é ${escapeHtml(o.papel)}</p>${erro}${caixaLink}` +
       `<h2>Quem tem acesso</h2>${lista}` +
+      comissoesBloco +
       `<h2>Convidar</h2><form method="post" action="/painel/equipe/convidar"><div class="card">` +
       `<label class="d" for="nome2">Nome</label><input id="nome2" name="nome" required maxlength="80" ${CAMPO}>` +
       `<label class="d" for="email3">E-mail</label><input id="email3" name="email" required type="email" maxlength="254" ${CAMPO}>` +
@@ -580,6 +605,7 @@ function renderVisaoGeral(o: {
       modulo("/painel/clientes", "Clientes", `Histórico, ticket médio e quem parou de voltar`, String(o.clientes)) +
       modulo("/painel/equipe", "Equipe", "Quem tem acesso ao painel e com que papel") +
       modulo("/painel/financeiro", "Caixa", "Quanto entrou de verdade e a meta do dia") +
+      modulo("/painel/despesas", "Despesas", "O que saiu este mês e o que sobrou") +
       modulo("/painel/barbearia", "Minha barbearia", "Nome, contato, cores e horários") +
       modulo("/painel/servicos", "Serviços", "Preços e duração do que você vende") +
       (o.sumidos > 0
@@ -808,6 +834,82 @@ function renderServicos(o: {
       `</div><button class="cta" type="submit">Adicionar</button></form>` +
       `<h2>Existentes</h2>${lista}` +
       `<a class="ghost" href="/painel/barbearia">Editar dados e horários</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
+  });
+}
+
+
+// Despesas e resultado: o número que interessa é o que sobrou.
+function renderDespesas(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  papel: string;
+  mes: string;
+  despesas: Array<{ expense_id: string; description: string; category: string; amount_cents: number; method: string; spent_on: string }>;
+  resultado: { recebido_cents: number; despesas_cents: number; comissoes_cents: number; bbt_concedido_cents: number; sobrou_cents: number };
+  ok?: boolean;
+  erro?: string;
+}): string {
+  const categorias: Array<[string, string]> = [
+    ["aluguel", "Aluguel"], ["produtos", "Produtos"], ["energia", "Energia"], ["agua", "Água"],
+    ["internet", "Internet"], ["salario", "Salários"], ["marketing", "Marketing"],
+    ["manutencao", "Manutenção"], ["impostos", "Impostos"], ["outros", "Outros"],
+  ];
+  const porCategoria = new Map<string, number>();
+  for (const d of o.despesas) {
+    porCategoria.set(d.category, (porCategoria.get(d.category) ?? 0) + Number(d.amount_cents));
+  }
+  const resumo = [...porCategoria.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([cat, valor]) => `<div class="r"><span>${escapeHtml(categorias.find(([k]) => k === cat)?.[1] ?? cat)}</span><span>${escapeHtml(money(valor))}</span></div>`)
+    .join("");
+  const sobrou = Number(o.resultado.sobrou_cents) || 0;
+  const linha = (rotulo: string, valor: string, cor?: string) =>
+    `<div class="r"><span>${escapeHtml(rotulo)}</span><span${cor ? ` style="color:${cor}"` : ""}>${escapeHtml(valor)}</span></div>`;
+  const lista = o.despesas.length
+    ? o.despesas
+        .map(
+          (d) =>
+            `<div class="card"><div class="row"><span class="t">${escapeHtml(d.description)}</span><span class="price">${escapeHtml(money(d.amount_cents))}</span></div>` +
+            `<span class="d">${escapeHtml(categorias.find(([k]) => k === d.category)?.[1] ?? d.category)} · ${escapeHtml(d.method)} · ${escapeHtml(d.spent_on.slice(8, 10) + "/" + d.spent_on.slice(5, 7))}</span>` +
+            `<form method="post" action="/painel/despesas/cancelar" style="margin-top:.35rem">` +
+            `<input type="hidden" name="despesa" value="${escapeHtml(d.expense_id)}">` +
+            `<button type="submit" class="ghost" style="padding:.35rem .7rem;font-size:.74rem;cursor:pointer;margin:0">Cancelar</button></form></div>`,
+        )
+        .join("")
+    : `<p class="empty">Nenhuma despesa lançada neste mês.</p>`;
+  const campo = CAMPO.replace(".85rem", ".3rem");
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/despesas`,
+    title: `Despesas — ${o.nome}`,
+    description: `Despesas e resultado da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Despesas</h1><p class="sub">Mês de ${escapeHtml(o.mes)}</p>` +
+      (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `<h2>Resultado do mês</h2><div class="hours">` +
+      linha("Recebido", money(o.resultado.recebido_cents)) +
+      linha("Despesas", "− " + money(o.resultado.despesas_cents)) +
+      linha("Comissões", "− " + money(o.resultado.comissoes_cents)) +
+      linha(sobrou >= 0 ? "Sobrou" : "Faltou", money(Math.abs(sobrou)), sobrou >= 0 ? "var(--p)" : "#ff8f8f") +
+      `</div><p class="d" style="color:var(--muted);font-size:.72rem;margin:.4rem 0 .8rem">` +
+      `BBT concedido no mês: ${escapeHtml(bbt(o.resultado.bbt_concedido_cents))} — não é despesa em dinheiro, é desconto prometido.</p>` +
+      `<h2>Despesas do mês</h2>` +
+      (resumo ? `<div class="hours">${resumo}</div>` : "") +
+      lista +
+      `<h2>Lançar despesa</h2><form method="post" action="/painel/despesas"><div class="card">` +
+      `<label class="d" for="dv">Descrição</label><input id="dv" name="descricao" required maxlength=120 ${campo}>` +
+      `<label class="d" for="dc">Categoria</label><select id="dc" name="categoria" style="width:100%;margin:.3rem 0 .8rem;padding:.65rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+      categorias.map(([k, v]) => `<option value="${k}">${v}</option>`).join("") + `</select>` +
+      `<label class="d" for="dval">Valor (R$)</label><input id="dval" name="valor" inputmode="decimal" required ${campo}>` +
+      `<label class="d" for="dd">Data</label><input id="dd" name="data" type="date" value="${escapeHtml(o.mes)}-01" required ${campo}>` +
+      `<label class="d" for="dm">Pago com</label><select id="dm" name="meio" style="width:100%;margin:.3rem 0 .8rem;padding:.65rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+      `<option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartão</option><option value="boleto">Boleto</option><option value="outro">Outro</option></select>` +
+      `</div><button class="cta" type="submit">Lançar</button></form>` +
+      `<a class="ghost" href="/painel/financeiro">Ver o caixa</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
   });
 }
 
@@ -1452,6 +1554,51 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: "/painel/servicos?ok=1" }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "despesas" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const valor = Number(texto("valor").replace(/\./g, "").replace(",", "."));
+    const dataBruta = texto("data");
+    const ok =
+      Boolean(texto("descricao")) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(dataBruta) &&
+      Number.isFinite(valor) &&
+      valor > 0 &&
+      (await addExpense({
+        actorId: userId,
+        tenantId: tenant.id,
+        descricao: texto("descricao"),
+        categoria: texto("categoria") || "outros",
+        valorCents: Math.round(valor * 100),
+        data: dataBruta,
+        meio: texto("meio") || "dinheiro",
+      }));
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/despesas?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "despesas" && path[2] === "cancelar") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const ok = await cancelExpense(userId, tenant.id, texto("despesa"));
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/despesas?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "comissao" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const pct = Number(texto("percentual").replace(",", "."));
+    const ok = Number.isFinite(pct) && pct >= 0 && pct <= 100
+      ? await setCommission(userId, tenant.id, texto("profissional"), Math.round(pct * 100))
+      : false;
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=comissao" : "erro=1"}` }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "agenda" && path[2] === "novo") {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
@@ -1785,7 +1932,12 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           ? "Só dono ou gerente pode mexer na equipe."
           : "Não foi possível concluir a operação."
         : undefined;
-      return html(renderEquipe({ row, nome, canonical, papel, membros, erro }));
+      const hojeEq = todayIn(timezone);
+      const inicioEq = `${hojeEq.slice(0, 7)}-01T00:00:00${offsetEm(timezone, `${hojeEq.slice(0, 7)}-01T12:00:00Z`)}`;
+      const proxEq = new Date(`${hojeEq.slice(0, 7)}-01T12:00:00Z`);
+      proxEq.setUTCMonth(proxEq.getUTCMonth() + 1);
+      const comissoes = await panelCommissions(tenant.id, inicioEq, `${proxEq.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proxEq.toISOString().slice(0, 10)}T12:00:00Z`)}`);
+      return html(renderEquipe({ row, nome, canonical, papel, membros, comissoes, ok: busca.get("ok") ?? undefined, erro }));
     }
     if (path[0] === "painel" && path[1] === "agenda" && path.length === 2) {
       const { accessToken, userId } = readSession(request);
@@ -1932,6 +2084,39 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const servicos = await panelServices(tenant.id, userId);
       const busca = new URL(request.url).searchParams;
       return html(renderServicos({ row, nome, canonical, papel, servicos, ok: busca.get("ok") === "1", erro: busca.get("erro") ? "Não foi possível salvar — confira nome, duração e preço." : undefined }));
+    }
+    if (path[0] === "painel" && path[1] === "despesas" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const hoje = todayIn(timezone);
+      const primeiro = `${hoje.slice(0, 7)}-01`;
+      const proximo = new Date(`${primeiro}T12:00:00Z`);
+      proximo.setUTCMonth(proximo.getUTCMonth() + 1);
+      const ultimo = new Date(proximo.getTime() - 86400000).toISOString().slice(0, 10);
+      const inicioMes = `${primeiro}T00:00:00${offsetEm(timezone, `${primeiro}T12:00:00Z`)}`;
+      const fimMes = `${proximo.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proximo.toISOString().slice(0, 10)}T12:00:00Z`)}`;
+      const [despesas, resumoMes] = await Promise.all([
+        panelExpenses(tenant.id, primeiro, ultimo),
+        panelResultado(tenant.id, inicioMes, fimMes),
+      ]);
+      const busca = new URL(request.url).searchParams;
+      return html(
+        renderDespesas({
+          row,
+          nome,
+          canonical,
+          papel,
+          mes: hoje.slice(0, 7),
+          despesas,
+          resultado: resumoMes,
+          ok: busca.get("ok") === "1",
+          erro: busca.get("erro") ? "Não foi possível lançar — confira descrição, valor e data." : undefined,
+        }),
+      );
     }
     if (path[0] === "painel" && path.length === 1) {
       const { accessToken, userId } = readSession(request);
