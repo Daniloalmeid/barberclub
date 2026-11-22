@@ -557,6 +557,7 @@ function renderVisaoGeral(o: {
     `<a class="card" href="${escapeHtml(href)}"><div class="row"><span class="t">${escapeHtml(titulo)}</span>` +
     `<span class="price">${escapeHtml(badge ?? "→")}</span></div><span class="d">${escapeHtml(desc)}</span></a>`;
 
+
   return appPage({
     row: o.row,
     name: o.nome,
@@ -901,6 +902,8 @@ function renderPainel(o: {
   staff: Array<{ staff_id: string; display_name: string }>;
   servicos: Array<{ service_id: string; name: string; duration_min: number; price_cents: number }>;
   bloqueios: Array<{ block_id: string; staff_id: string; starts_at: string; ends_at: string; reason: string | null }>;
+  vagos: Array<{ staff_id: string; starts_at: string }>;
+  servicoPadrao: string | null;
   filtro: string;
   erro?: string;
   aviso?: string;
@@ -1051,6 +1054,43 @@ function renderPainel(o: {
     `<label class="d" for="bmot">Motivo</label><input id="bmot" name="motivo" maxlength=60 placeholder="Almoço" ${campoCurto}>` +
     `<button type="submit" class="cta">Bloquear</button></form></details>`;
 
+  // Horários vagos: é o que enche agenda vazia. O botão monta a mensagem com os horários
+  // do dia e abre o WhatsApp — o barbeiro escolhe para quem mandar. Nada é enviado
+  // sozinho: disparo automático é o caminho mais curto para o número ser bloqueado.
+  const vagosBloco = (() => {
+    if (!o.servicoPadrao) return "";
+    if (!o.vagos.length) {
+      return `<h2>Horários vagos</h2><p class="empty">Nenhum horário livre neste dia.</p>`;
+    }
+    const porProfissional = new Map<string, string[]>();
+    for (const v of o.vagos) {
+      const lista = porProfissional.get(v.staff_id) ?? [];
+      if (!lista.includes(fmtTime(v.starts_at, o.timezone))) lista.push(fmtTime(v.starts_at, o.timezone));
+      porProfissional.set(v.staff_id, lista);
+    }
+    const linhas = [...porProfissional.entries()]
+      .map(([id, horas]) => {
+        const quem = o.staff.find((st) => st.staff_id === id)?.display_name ?? "Profissional";
+        return `<div class="r"><span>${escapeHtml(quem)}</span><span style="text-align:right">${escapeHtml(horas.join(" · "))}</span></div>`;
+      })
+      .join("");
+    const todas = o.vagos.map((v) => fmtTime(v.starts_at, o.timezone));
+    const unicas = [...new Set(todas)].sort().slice(0, 8);
+    const zap = String((o.row as Record<string, unknown>).whatsapp_public ?? "").replace(/\D/g, "");
+    const servico = o.servicos.find((sv) => sv.service_id === o.servicoPadrao)?.name ?? "atendimento";
+    const diaBonito = fmtDay(`${o.dia}T12:00:00Z`, o.timezone);
+    const mensagem =
+      `Oi! Tenho horário livre na ${o.nome} ${diaBonito}: ` +
+      `${unicas.join(", ")}. ` +
+      `Dá para ${servico.toLowerCase()}. Quer que eu reserve? ` +
+      `${o.canonical}agendar`;
+    return (
+      `<h2>Horários vagos</h2><div class="card"><span class="d">${escapeHtml(servico)} · ${o.vagos.length} horários livres</span>${linhas}</div>` +
+      `<a class="cta" style="display:block;text-align:center;text-decoration:none;margin-top:.5rem" href="https://wa.me/${escapeHtml(zap)}?text=${encodeURIComponent(mensagem)}" target="_blank" rel="noopener noreferrer">Divulgar no WhatsApp</a>` +
+      `<p class="d" style="color:var(--muted);font-size:.72rem;margin:.4rem 0 .8rem">Abre o WhatsApp com a mensagem pronta. Você escolhe para quem enviar.</p>`
+    );
+  })();
+
   return appPage({
     row: o.row,
     name: o.nome,
@@ -1062,7 +1102,7 @@ function renderPainel(o: {
       `<h1>Agenda</h1><p class="sub">${escapeHtml(o.papel)} · ${escapeHtml(fmtDay(`${o.dia}T12:00:00Z`, o.timezone))}</p>` +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
       (o.aviso ? `<p class="empty" style="border-color:var(--p)">${escapeHtml(o.aviso)}</p>` : "") +
-      `${kpi}${nav}${filtroForm}${lista}${bloqueiosBloco}${novoForm}${bloquearForm}`,
+      `${kpi}${nav}${filtroForm}${lista}${vagosBloco}${bloqueiosBloco}${novoForm}${bloquearForm}`,
   });
 }
 
@@ -1744,6 +1784,8 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
             : "Não foi possível concluir a operação."
         : undefined;
       const aviso = busca.get("ok") ? "Feito." : undefined;
+      const ativos = servicos.filter((sv) => sv.active);
+      const vagos = ativos[0] ? await listFreeSlots(slug, ativos[0].service_id, dia) : [];
       return html(
         renderPainel({
           row,
@@ -1757,6 +1799,8 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           staff: staffLista.map((st) => ({ staff_id: st.staff_id, display_name: st.display_name })),
           servicos: servicos.filter((sv) => sv.active).map((sv) => ({ service_id: sv.service_id, name: sv.name, duration_min: Number(sv.duration_min), price_cents: Number(sv.price_cents) })),
           bloqueios,
+          vagos: vagos.map((v) => ({ staff_id: v.staff_id, starts_at: v.starts_at })),
+          servicoPadrao: ativos[0]?.service_id ?? null,
           filtro,
           erro,
           aviso,
