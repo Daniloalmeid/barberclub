@@ -9,12 +9,19 @@ import {
   cadastrar,
   clearSessionHeaders,
   confirmAppointment,
+  creditCashback,
   customerAppointments,
+  customerCashback,
   customerMe,
   entrar,
   idempotencyKeyFor,
+  loginStaff,
+  panelAgenda,
+  panelResumo,
+  panelRole,
   readSession,
   sessionHeaders,
+  setAppointmentStatus,
   tenantBySlug,
 } from "@/server/customer-auth";
 
@@ -213,7 +220,7 @@ function appPage(options: {
   title: string;
   description: string;
   body: string;
-  nav: "inicio" | "agendar" | "conta";
+  nav?: "inicio" | "agendar" | "conta";
   crumbs?: Crumb[];
 }): string {
   const theme = themeOf(options.row);
@@ -405,7 +412,153 @@ async function renderBooking(o: {
   return appPage({ ...base, body });
 }
 
-// ---------- entrada do cliente e confirmação ----------
+// ---------- painel do barbeiro ----------
+// Quem entra aqui é membro da barbearia (memberships), não cliente. A permissão é
+// conferida no banco (server_api.set_appointment_status recebe o ator e valida o papel).
+
+function offsetEm(timezone: string, iso: string): string {
+  try {
+    const partes = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longOffset" }).formatToParts(
+      new Date(iso),
+    );
+    const nome = partes.find((p) => p.type === "timeZoneName")?.value ?? "GMT+00:00";
+    const m = nome.match(/GMT([+-])(\d{2}):?(\d{2})?/);
+    return m ? `${m[1]}${m[2]}:${m[3] ?? "00"}` : "+00:00";
+  } catch {
+    return "+00:00";
+  }
+}
+
+// Janela do dia no fuso da barbearia. Sem isso, "hoje" em São Paulo começaria às 21h
+// do dia anterior em UTC e a agenda mostraria a noite errada.
+function janelaDoDia(dia: string, timezone: string): { from: string; to: string } {
+  const proximo = new Date(`${dia}T12:00:00Z`);
+  proximo.setUTCDate(proximo.getUTCDate() + 1);
+  const dia2 = proximo.toISOString().slice(0, 10);
+  return {
+    from: `${dia}T00:00:00${offsetEm(timezone, `${dia}T12:00:00Z`)}`,
+    to: `${dia2}T00:00:00${offsetEm(timezone, `${dia2}T12:00:00Z`)}`,
+  };
+}
+
+function somaDia(dia: string, delta: number): string {
+  const d = new Date(`${dia}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
+const ACAO_STATUS: Record<string, Array<{ status: string; rotulo: string }>> = {
+  hold: [
+    { status: "confirmed", rotulo: "Confirmar" },
+    { status: "canceled", rotulo: "Cancelar" },
+  ],
+  pending_payment: [
+    { status: "confirmed", rotulo: "Confirmar" },
+    { status: "canceled", rotulo: "Cancelar" },
+  ],
+  confirmed: [
+    { status: "completed", rotulo: "Concluir" },
+    { status: "no_show", rotulo: "Faltou" },
+    { status: "canceled", rotulo: "Cancelar" },
+  ],
+};
+
+function renderPainelEntrar(o: { row: Record<string, unknown>; nome: string; canonical: string; erro?: string }): string {
+  const erro = o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "";
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel`,
+    title: `Painel — ${o.nome}`,
+    description: `Acesso da equipe da ${o.nome}.`,
+    body:
+      `<h1>Painel</h1><p class="sub">Acesso da equipe da barbearia.</p>${erro}` +
+      `<form method="post" action="/painel/entrar"><div class="card">` +
+      `<label class="d" for="email">E-mail</label><input id="email" name="email" required type="email" autocomplete="email" ${CAMPO}>` +
+      `<label class="d" for="senha">Senha</label><input id="senha" name="senha" required type="password" autocomplete="current-password" ${CAMPO.replace(".85rem", ".2rem")}>` +
+      `</div><button class="cta" type="submit">Entrar no painel</button></form>` +
+      `<a class="ghost" href="/">Voltar ao site</a>`,
+  });
+}
+
+function renderPainel(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  papel: string;
+  dia: string;
+  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number };
+  agenda: Array<{
+    appointment_id: string;
+    starts_at: string;
+    status: string;
+    customer_name: string | null;
+    customer_phone: string | null;
+    service_name: string | null;
+    staff_name: string | null;
+    price_cents: number | null;
+  }>;
+  erro?: string;
+}): string {
+  const hoje = todayIn(o.timezone);
+  const numero = (v: number) => String(Number(v) || 0);
+  const kpi =
+    `<div class="hours" style="margin-bottom:.75rem">` +
+    `<div class="r"><span>Agendamentos</span><span><strong>${numero(o.resumo.total)}</strong></span></div>` +
+    `<div class="r"><span>Confirmados</span><span>${numero(o.resumo.confirmados)}</span></div>` +
+    `<div class="r"><span>Concluídos</span><span>${numero(o.resumo.concluidos)}</span></div>` +
+    `<div class="r"><span>Cancelados / faltas</span><span>${numero(o.resumo.cancelados)}</span></div>` +
+    `<div class="r"><span>Previsto em caixa</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+    `</div>`;
+
+  const nav =
+    `<div class="days" style="grid-template-columns:repeat(3,1fr);margin-bottom:.75rem">` +
+    `<a href="/painel?dia=${somaDia(o.dia, -1)}">Ontem<br>${somaDia(o.dia, -1).slice(8, 10)}/${somaDia(o.dia, -1).slice(5, 7)}</a>` +
+    `<a class="${o.dia === hoje ? "on" : ""}" href="/painel?dia=${hoje}">Hoje<br>${hoje.slice(8, 10)}/${hoje.slice(5, 7)}</a>` +
+    `<a href="/painel?dia=${somaDia(o.dia, 1)}">Amanhã<br>${somaDia(o.dia, 1).slice(8, 10)}/${somaDia(o.dia, 1).slice(5, 7)}</a>` +
+    `</div>`;
+
+  const lista = o.agenda.length
+    ? o.agenda
+        .map((a) => {
+          const acoes = (ACAO_STATUS[a.status] ?? [])
+            .map(
+              (acao) =>
+                `<form method="post" action="/painel/status" style="display:inline">` +
+                `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+                `<input type="hidden" name="status" value="${escapeHtml(acao.status)}">` +
+                `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+                `<button type="submit" class="ghost" style="display:inline-block;margin:.35rem .35rem 0 0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">${escapeHtml(acao.rotulo)}</button></form>`,
+            )
+            .join("");
+          const zap = String(a.customer_phone ?? "").replace(/\D/g, "");
+          return (
+            `<div class="card"><div class="row"><span class="t">${escapeHtml(fmtTime(a.starts_at, o.timezone))} · ${escapeHtml(a.customer_name ?? "Cliente")}</span>` +
+            `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
+            `<span class="d">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
+            `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
+            `${acoes}</div>`
+          );
+        })
+        .join("")
+    : `<p class="empty">Nenhum agendamento neste dia.</p>`;
+
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel`,
+    title: `Painel — ${o.nome}`,
+    description: `Agenda e caixa da ${o.nome}.`,
+    body:
+      `<h1>Painel</h1><p class="sub">${escapeHtml(o.papel)} · ${escapeHtml(fmtDay(`${o.dia}T12:00:00Z`, o.timezone))}</p>` +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `${kpi}${nav}${lista}` +
+      `<a class="ghost" href="/sair">Sair</a>`,
+  });
+}
+
+
 // O cliente não cria senha: informa nome e WhatsApp e o servidor abre a sessão.
 // Isso basta para book_appointment, que exige auth.uid() e linha em customers.
 
@@ -480,6 +633,14 @@ function renderConfirmed(o: {
   });
 }
 
+// Moeda do programa de fidelidade. O banco guarda unidade menor inteira (1 BBT = 100),
+// então R$ 45,00 com 10% vira 4,50 BBT. Nunca exibir "R$" no saldo de fidelidade:
+// é token da barbearia, não dinheiro em conta.
+function bbt(centavos: number): string {
+  const valor = (Number(centavos) || 0) / 100;
+  return `${valor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BBT`;
+}
+
 const ROTULO_STATUS: Record<string, string> = {
   hold: "aguardando confirmação",
   pending_payment: "aguardando pagamento",
@@ -505,11 +666,30 @@ function renderConta(o: {
     staff_name: string | null;
     price_cents: number | null;
   }>;
+  cashback: { balance_cents: number; entries: Array<{ kind: string; amount_cents: number; memo: string | null; created_at: string }> };
   novo: boolean;
 }): string {
   const bemVindo = o.novo
     ? `<div class="card" style="border-color:var(--p)"><div class="t">Conta criada</div><span class="d">Você já está dentro — não precisa confirmar nada por e-mail.</span></div>`
     : "";
+  const saldo = Number(o.cashback.balance_cents) || 0;
+  const movimentos = o.cashback.entries.length
+    ? o.cashback.entries
+        .slice(0, 5)
+        .map(
+          (e) =>
+            `<div class="r"><span>${escapeHtml(e.memo ?? (e.kind === "credit" ? "cashback" : "uso de cashback"))}` +
+            `<br><span class="off" style="font-size:.7rem">${escapeHtml(String(e.created_at).slice(0, 10).split("-").reverse().join("/"))}</span></span>` +
+            `<span style="color:${e.kind === "credit" ? "var(--p)" : "var(--txt)"}">${e.kind === "credit" ? "+" : "−"} ${escapeHtml(bbt(e.amount_cents))}</span></div>`,
+        )
+        .join("")
+    : `<div class="r"><span class="off">Nenhum movimento ainda</span></div>`;
+  const cashbackBlock =
+    `<h2>BBT — Barber Token</h2>` +
+    `<div class="card"><div class="row"><span class="t">Saldo</span><span class="price">${escapeHtml(bbt(saldo))}</span></div>` +
+    `<span class="d">${saldo > 0 ? "Use na próxima visita, no balcão." : "Ganhe BBT a cada atendimento concluído."}</span></div>` +
+    `<div class="hours">${movimentos}</div>` +
+    `<p class="d" style="color:var(--muted);font-size:.72rem;margin:.4rem 0 0">1 BBT equivale a R$ 1,00 em serviços desta barbearia. Não é dinheiro em conta e não pode ser transferido.</p>`;
   const nome = o.dados.fullName ?? "Cliente";
   const lista = o.agendamentos.length
     ? o.agendamentos
@@ -534,6 +714,7 @@ function renderConta(o: {
       `${bemVindo}<h1>Olá, ${escapeHtml(nome.split(/\s+/)[0] ?? nome)}</h1>` +
       `<p class="sub">${escapeHtml(o.dados.email ?? "")}${o.dados.phone ? ` · ${escapeHtml(o.dados.phone)}` : ""}</p>` +
       `<h2>Meus horários</h2>${lista}` +
+      cashbackBlock +
       `<a class="cta" href="/agendar">Marcar outro horário</a>` +
       `<a class="ghost" href="/sair">Sair da conta</a>`,
   });
@@ -585,6 +766,43 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return html(renderFalha({ row, nome, canonical, mensagem: "Formulário inválido.", voltar: "/agendar" }));
   }
   const texto = (chave: string) => String(form.get(chave) ?? "").trim();
+
+  if (path?.[0] === "painel" && path[1] === "entrar" && path.length === 2) {
+    const login = await loginStaff({ email: texto("email"), password: texto("senha") });
+    if (!login.ok || !login.session) {
+      return html(renderPainelEntrar({ row, nome, canonical, erro: "E-mail ou senha não conferem." }), 400);
+    }
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const papel = await panelRole(tenant.id, login.session.userId);
+    if (!papel) {
+      return html(
+        renderPainelEntrar({ row, nome, canonical, erro: "Esta conta não é da equipe desta barbearia." }),
+        403,
+      );
+    }
+    const headers = new Headers({ location: "/painel" });
+    for (const item of sessionHeaders(login.session)) headers.append("set-cookie", item);
+    return new Response(null, { status: 303, headers });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "status" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
+    const alvo = texto("status");
+    const agendamento = texto("agendamento");
+    const resultado = await setAppointmentStatus(userId, agendamento, alvo);
+    // Cashback nasce do atendimento concluído, nunca de reserva cancelada ou falta.
+    let credito = 0;
+    if (resultado.ok && alvo === "completed") credito = await creditCashback(agendamento);
+    const destino = `/painel?dia=${encodeURIComponent(dia)}${resultado.ok ? "" : "&erro=1"}`;
+    const headers = new Headers({ location: destino });
+    if (credito > 0) headers.set("x-cashback-creditado", String(credito));
+    return new Response(null, { status: 303, headers });
+  }
 
   if (path?.[0] === "entrar" && (path.length === 1 || (path[1] === "entrar" && path.length === 2))) {
     const next = texto("next");
@@ -710,6 +928,31 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
   if (path && path.length > 0) {
+    if (path[0] === "painel" && path[1] === "entrar") {
+      return html(renderPainelEntrar({ row, nome, canonical }));
+    }
+    if (path[0] === "painel" && path.length === 1) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) {
+        // Logado, mas sem vínculo ativo com esta barbearia: não é painel dele.
+        const headers = new Headers({ location: "/painel/entrar" });
+        for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
+        return new Response(null, { status: 303, headers });
+      }
+      const busca = new URL(request.url).searchParams;
+      const diaBruto = busca.get("dia") ?? "";
+      const dia = /^\d{4}-\d{2}-\d{2}$/.test(diaBruto) ? diaBruto : todayIn(timezone);
+      const { from, to } = janelaDoDia(dia, timezone);
+      const [resumo, agenda] = await Promise.all([panelResumo(tenant.id, from, to), panelAgenda(tenant.id, from, to)]);
+      const erro = busca.get("erro") ? "Não foi possível mudar o status desse atendimento." : undefined;
+      return html(renderPainel({ row, nome, canonical, timezone, papel, dia, resumo, agenda, erro }));
+    }
     if (path[0] === "sair" && path.length === 1) {
       const headers = new Headers({ location: "/" });
       for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
@@ -724,11 +967,12 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       }
       const tenant = await tenantBySlug(slug);
       if (!tenant) return neutral();
-      const [dados, agendamentos] = await Promise.all([
+      const [dados, agendamentos, cashback] = await Promise.all([
         customerMe(tenant.id, userId),
         customerAppointments(tenant.id, userId),
+        customerCashback(tenant.id, userId),
       ]);
-      const pagina = renderConta({ row, nome, canonical, timezone, dados, agendamentos, novo });
+      const pagina = renderConta({ row, nome, canonical, timezone, dados, agendamentos, cashback, novo });
       return new Response(pagina, {
         status: 200,
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },

@@ -91,8 +91,12 @@ async function rpcServer<T>(fn: string, body: Record<string, unknown>): Promise<
     signal: AbortSignal.timeout(6000),
   });
   if (!response.ok) throw new Error(`server_api.${fn} ${response.status}`);
-  const rows: unknown = await response.json();
-  return Array.isArray(rows) ? (rows as T[]) : [];
+  const json: unknown = await response.json();
+  // Função que retorna TABLE devolve array; função que retorna escalar (text, bigint)
+  // devolve o valor solto. Tratar só array fazia panel_role virar null e o barbeiro
+  // levar 403 mesmo sendo dono da barbearia.
+  if (Array.isArray(json)) return json as T[];
+  return json === null ? [] : ([json] as T[]);
 }
 
 type TenantRow = { id: string; display_name: string; timezone: string; status: string };
@@ -290,6 +294,92 @@ export async function customerAppointments(tenantId: string, userId: string): Pr
 export async function confirmAppointment(appointmentId: string): Promise<boolean> {
   const rows = await rpcServer<{ status: string }>("confirm_appointment", { p_appointment: appointmentId }).catch(() => []);
   return rows[0]?.status === "confirmed";
+}
+
+// --- painel do barbeiro ----------------------------------------------------------
+
+// Entrada do barbeiro: só abre sessão. Não cria linha de customer — quem trabalha na
+// barbearia é membro (memberships), não cliente.
+export async function loginStaff(o: { email: string; password: string }): Promise<{ ok: boolean; session?: Session }> {
+  const email = String(o.email ?? "").trim().toLowerCase();
+  if (!emailOk(email) || !passwordOk(o.password)) return { ok: false };
+  const session = await signIn(email, o.password);
+  return session ? { ok: true, session } : { ok: false };
+}
+
+export type Papel = "owner" | "manager" | "staff" | null;
+
+export async function panelRole(tenantId: string, userId: string): Promise<Papel> {
+  const rows = await rpcServer<string>("panel_role", { p_tenant: tenantId, p_user: userId }).catch(() => []);
+  const papel = rows[0];
+  return papel === "owner" || papel === "manager" || papel === "staff" ? papel : null;
+}
+
+export type PainelAgendamento = {
+  appointment_id: string;
+  starts_at: string;
+  ends_at: string;
+  status: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  service_name: string | null;
+  staff_name: string | null;
+  price_cents: number | null;
+};
+
+export async function panelAgenda(tenantId: string, from: string, to: string): Promise<PainelAgendamento[]> {
+  return rpcServer<PainelAgendamento>("panel_agenda", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+}
+
+export type PainelResumo = {
+  total: number;
+  confirmados: number;
+  concluidos: number;
+  cancelados: number;
+  faturamento_cents: number;
+};
+
+export async function panelResumo(tenantId: string, from: string, to: string): Promise<PainelResumo> {
+  const rows = await rpcServer<PainelResumo>("panel_resumo", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+  return rows[0] ?? { total: 0, confirmados: 0, concluidos: 0, cancelados: 0, faturamento_cents: 0 };
+}
+
+// O ator vai junto: a função do banco confere o papel e, para staff, se o atendimento
+// é dele. A checagem não fica só aqui no servidor.
+export async function setAppointmentStatus(
+  actorId: string,
+  appointmentId: string,
+  status: string,
+): Promise<{ ok: boolean; erro?: string }> {
+  try {
+    const rows = await rpcServer<string>("set_appointment_status", {
+      p_actor: actorId,
+      p_appointment: appointmentId,
+      p_status: status,
+    });
+    return { ok: rows[0] === status };
+  } catch (error) {
+    const texto = String((error as Error)?.message ?? "");
+    return { ok: false, erro: texto.includes("transicao_invalida") ? "transicao_invalida" : "falha" };
+  }
+}
+
+export async function creditCashback(appointmentId: string): Promise<number> {
+  const rows = await rpcServer<number>("credit_cashback", { p_appointment: appointmentId }).catch(() => []);
+  return Number(rows[0] ?? 0);
+}
+
+export type CashbackCliente = {
+  balance_cents: number;
+  entries: Array<{ kind: string; amount_cents: number; memo: string | null; created_at: string }>;
+};
+
+export async function customerCashback(tenantId: string, userId: string): Promise<CashbackCliente> {
+  const rows = await rpcServer<{ balance_cents: number; entries: CashbackCliente["entries"] }>("customer_cashback", {
+    p_tenant: tenantId,
+    p_user: userId,
+  }).catch(() => []);
+  return { balance_cents: Number(rows[0]?.balance_cents ?? 0), entries: rows[0]?.entries ?? [] };
 }
 
 // --- cookies -------------------------------------------------------------------
