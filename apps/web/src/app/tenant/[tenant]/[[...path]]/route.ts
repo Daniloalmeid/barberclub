@@ -417,6 +417,19 @@ function renderHome(o: {
   const state = String(o.row.state ?? "").trim();
   const local = [address, [city, state].filter(Boolean).join("/")].filter(Boolean).join(" — ");
   const wa = whatsappLink(o.row.whatsapp_public, o.nome);
+  const insta = String(o.row.instagram_handle ?? "").replace(/^@/, "").trim();
+  const tel = String(o.row.phone_public ?? "").trim();
+  const instaLinha = insta
+    ? `<div class="r"><span>Instagram</span><span><a href="https://instagram.com/${encodeURIComponent(insta)}" target="_blank" rel="noopener noreferrer" style="color:var(--p);text-decoration:none">@${escapeHtml(insta)}</a></span></div>`
+    : "";
+  const telLinha = tel
+    ? `<div class="r"><span>Telefone</span><span><a href="tel:${escapeHtml(tel.replace(/[^\d+]/g, ""))}" style="color:var(--p);text-decoration:none">${escapeHtml(tel)}</a></span></div>`
+    : "";
+  const localLinha = local ? `<div class="r"><span>Endereço</span><span style="text-align:right;max-width:60%">${escapeHtml(local)}</span></div>` : "";
+  const contato =
+    instaLinha || telLinha || localLinha
+      ? `<h2>Contato</h2><div class="hours">${localLinha}${telLinha}${instaLinha}</div>`
+      : "";
   const cards = o.services.length
     ? o.services
         .map(
@@ -432,7 +445,7 @@ function renderHome(o: {
         .map((member) => `<div class="who"><div class="avatar">${escapeHtml(initials(member.display_name))}</div>${escapeHtml(member.display_name)}</div>`)
         .join("")}</div>`
     : "";
-  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
+  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}${contato}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
   return appPage({
     row: o.row,
     name: o.nome,
@@ -838,6 +851,11 @@ function renderBarbearia(o: {
   ok?: boolean;
   erro?: string;
 }): string {
+  // Campo de contato vazio apaga o botão do site inteiro: avisar em vez de deixar passar.
+  const avisoContato =
+    !String(o.row.whatsapp_public ?? "").trim() || !String(o.row.phone_public ?? "").trim()
+      ? `<p class="empty" style="border-color:#b45309">Sem WhatsApp ou telefone, o site fica sem botão de contato. Preencha os dois.</p>`
+      : "";
   const campo = (id: string, rotulo: string, valor: string, tipo = "text", extra = "") =>
     `<label class="d" for="${id}">${escapeHtml(rotulo)}</label>` +
     `<input id="${id}" name="${id}" type="${tipo}" value="${escapeHtml(valor)}" ${extra} ${CAMPO}>`;
@@ -861,6 +879,7 @@ function renderBarbearia(o: {
       `<h1>Minha barbearia</h1><p class="sub">O que você mudar aqui aparece no site na hora</p>` +
       (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      avisoContato +
       `<form method="post" action="/painel/barbearia"><h2>Identidade</h2><div class="card">` +
       campo("nome", "Nome da barbearia", String(o.row.display_name ?? o.nome), "text", "required maxlength=80") +
       campo("endereco", "Endereço", String(o.row.address_line ?? ""), "text", "maxlength=120") +
