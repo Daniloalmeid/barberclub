@@ -880,7 +880,8 @@ function renderBarbearia(o: {
       (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
       avisoContato +
-      `<form method="post" action="/painel/barbearia"><h2>Identidade</h2><div class="card">` +
+      `<form method="post" action="/painel/barbearia"><h2>Identidade</h2>` +
+      `<p class="d" style="color:var(--muted);font-size:.72rem;margin:0 0 .4rem">Campo deixado em branco não altera o que já está gravado.</p><div class="card">` +
       campo("nome", "Nome da barbearia", String(o.row.display_name ?? o.nome), "text", "required maxlength=80") +
       campo("endereco", "Endereço", String(o.row.address_line ?? ""), "text", "maxlength=120") +
       campo("cidade", "Cidade", String(o.row.city ?? ""), "text", "maxlength=60") +
