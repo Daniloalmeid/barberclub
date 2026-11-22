@@ -39,6 +39,7 @@ import {
   panelResumo,
   setCommission,
   setStaffActive,
+  setStaffServices,
   panelRole,
   usuarioPorEmail,
   debitCashback,
@@ -527,6 +528,16 @@ async function renderBooking(o: {
   // Passo 2 — profissional. "Sem preferência" vem primeiro: a maioria só quer cortar.
   if (!profissional) {
     const candidatos = equipe.filter((item) => item.service_ids.includes(service.service_id));
+    if (!candidatos.length) {
+      // Ninguém marcado para este serviço: oferecer "sem preferência" seria mentir e o
+      // cliente só descobriria no fim, ao confirmar.
+      return appPage({
+        ...base,
+        body:
+          `<h1>${serviceLabel}</h1><p class="empty">Nenhum profissional está marcado para este serviço. Fale com a barbearia para marcar.</p>` +
+          `<a class="ghost" href="/agendar">Escolher outro serviço</a>`,
+      });
+    }
     const cards =
       `<a class="card" href="${qp({ servico: service.service_id, profissional: "todos" })}" style="border-color:var(--p)">` +
       `<div class="row"><span class="t">Sem preferência</span><span class="price">→</span></div>` +
@@ -638,7 +649,8 @@ function renderEquipe(o: {
   papel: string;
   membros: Array<{ user_id: string; email: string; full_name: string | null; role: string; status: string }>;
   comissoes?: Array<{ staff_id: string; staff_name: string; commission_bps: number; atendimentos: number; base_cents: number; comissao_cents: number }>;
-  profissionais?: Array<{ staff_id: string; display_name: string; active: boolean; commission_bps: number; access_email: string | null; access_role: string | null }>;
+  profissionais?: Array<{ staff_id: string; display_name: string; active: boolean; commission_bps: number; access_email: string | null; access_role: string | null; service_ids?: string[] | null }>;
+  servicos?: Array<{ service_id: string; name: string }>;
   link?: string;
   ok?: string;
   erro?: string;
@@ -672,6 +684,19 @@ function renderEquipe(o: {
           `<input type="hidden" name="profissional" value="${escapeHtml(st.staff_id)}">` +
           `<input type="hidden" name="ativo" value="${st.active ? "0" : "1"}">` +
           `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">${st.active ? "Desativar (sai da agenda)" : "Reativar na agenda"}</button></form>` +
+          `<details style="margin-top:.35rem"><summary class="d" style="cursor:pointer">Serviços que ele faz (${(st.service_ids ?? []).length})</summary>` +
+          `<form method="post" action="/painel/equipe/servicos" style="margin-top:.4rem">` +
+          `<input type="hidden" name="profissional" value="${escapeHtml(st.staff_id)}">` +
+          (o.servicos ?? [])
+            .map(
+              (sv) =>
+                `<label class="d" style="display:flex;gap:.45rem;align-items:center;margin:.25rem 0;font-size:.8rem">` +
+                `<input type="checkbox" name="servico" value="${escapeHtml(sv.service_id)}"${(st.service_ids ?? []).includes(sv.service_id) ? " checked" : ""} style="width:1.05rem;height:1.05rem;accent-color:var(--p)">` +
+                `${escapeHtml(sv.name)}</label>`,
+            )
+            .join("") +
+          `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:.35rem 0 0">Salvar serviços</button></form>` +
+          `<p class="d" style="color:var(--muted);font-size:.68rem;margin:.25rem 0 0">Serviço desmarcado deixa de ser oferecido com ele no agendamento.</p></details>` +
           (st.access_email
             ? ""
             : `<details style="margin-top:.35rem"><summary class="d" style="cursor:pointer">Dar acesso ao painel</summary>` +
@@ -695,7 +720,16 @@ function renderEquipe(o: {
     `<form method="post" action="/painel/equipe/novo" style="margin-top:.5rem">` +
     `<label class="d" for="np2">Nome</label><input id="np2" name="nome" required maxlength=60 style="width:100%;margin:.2rem 0 .5rem;padding:.55rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
     `<label class="d" for="nc2">Comissão (%)</label><input id="nc2" name="percentual" inputmode="decimal" value="0" style="width:100%;margin:.2rem 0 .5rem;padding:.55rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
-    `<button type="submit" class="cta" style="margin:.2rem 0 0">Adicionar</button></form></details>`;
+    `<span class="d">O que ele faz:</span>` +
+    (o.servicos ?? [])
+      .map(
+        (sv) =>
+          `<label class="d" style="display:flex;gap:.45rem;align-items:center;margin:.25rem 0;font-size:.8rem">` +
+          `<input type="checkbox" name="servico" value="${escapeHtml(sv.service_id)}" checked style="width:1.05rem;height:1.05rem;accent-color:var(--p)">` +
+          `${escapeHtml(sv.name)}</label>`,
+      )
+      .join("") +
+    `<button type="submit" class="cta" style="margin:.5rem 0 0">Adicionar</button></form></details>`;
 
   const lista = o.membros.length
     ? o.membros
@@ -1676,6 +1710,7 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return html(renderFalha({ row, nome, canonical, mensagem: "Formulário inválido.", voltar: "/agendar" }));
   }
   const texto = (chave: string) => String(form.get(chave) ?? "").trim();
+  const lista = (chave: string) => form.getAll(chave).map((valor) => String(valor).trim()).filter(Boolean);
 
   if (path?.[0] === "painel" && path[1] === "convite" && path.length === 2) {
     const code = texto("c");
@@ -1872,6 +1907,15 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=1" : "erro=1"}` }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "servicos") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const ok = await setStaffServices(tenant.id, userId, texto("profissional"), lista("servico"));
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=servicos" : "erro=1"}` }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "novo") {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
@@ -1879,7 +1923,7 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     if (!tenant) return neutral();
     const pct = Number(texto("percentual").replace(",", "."));
     const ok = Number.isFinite(pct) && pct >= 0 && pct <= 100
-      ? await addStaff(tenant.id, userId, texto("nome"), Math.round(pct * 100))
+      ? await addStaff(tenant.id, userId, texto("nome"), Math.round(pct * 100), lista("servico"))
       : false;
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=1" : "erro=1"}` }) });
   }
@@ -2231,9 +2275,10 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const inicioEq = `${hojeEq.slice(0, 7)}-01T00:00:00${offsetEm(timezone, `${hojeEq.slice(0, 7)}-01T12:00:00Z`)}`;
       const proxEq = new Date(`${hojeEq.slice(0, 7)}-01T12:00:00Z`);
       proxEq.setUTCMonth(proxEq.getUTCMonth() + 1);
-      const [comissoes, profissionais] = await Promise.all([
+      const [comissoes, profissionais, servicosPainel] = await Promise.all([
         panelCommissions(tenant.id, inicioEq, `${proxEq.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proxEq.toISOString().slice(0, 10)}T12:00:00Z`)}`),
         panelStaff(tenant.id, userId),
+        panelServices(tenant.id, userId),
       ]);
       return html(
         renderEquipe({
@@ -2250,7 +2295,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
             commission_bps: Number(st.commission_bps) || 0,
             access_email: st.access_email,
             access_role: st.access_role,
+            service_ids: st.service_ids ?? [],
           })),
+          servicos: servicosPainel.filter((sv) => sv.active).map((sv) => ({ service_id: sv.service_id, name: sv.name })),
           link: busca.get("link") ?? undefined,
           ok: busca.get("ok") ?? undefined,
           erro,

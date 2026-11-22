@@ -975,6 +975,7 @@ export type Profissional = {
   access_user_id: string | null;
   access_email: string | null;
   access_role: string | null;
+  service_ids: string[] | null;
 };
 
 // Resolve o id do usuário pelo e-mail (a Admin API não consulta por e-mail).
@@ -1015,15 +1016,30 @@ export async function setStaffActive(tenantId: string, actorId: string, staffId:
   }
 }
 
-export async function addStaff(tenantId: string, actorId: string, nome: string, bps: number): Promise<boolean> {
+export async function addStaff(tenantId: string, actorId: string, nome: string, bps: number, servicos?: string[]): Promise<boolean> {
   try {
     const linhas = await rpcServer<string>("add_staff", {
       p_tenant: tenantId,
       p_actor: actorId,
       p_name: nome,
       p_commission_bps: Math.round(bps),
+      p_services: servicos ?? null,
     });
     return Boolean(linhas[0]);
+  } catch {
+    return false;
+  }
+}
+
+export async function setStaffServices(tenantId: string, actorId: string, staffId: string, servicos: string[]): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<number>("set_staff_services", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_staff: staffId,
+      p_services: servicos,
+    });
+    return Number(linhas[0]) === servicos.length;
   } catch {
     return false;
   }
