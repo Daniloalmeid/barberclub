@@ -153,26 +153,108 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-function themeOf(row: Record<string, unknown>): { primary: string; secondary: string; accent: string; onPrimary: string } {
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean.slice(0, 6);
+  return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const um = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${um(r)}${um(g)}${um(b)}`;
+}
+
+// mistura colorida: fração 1 = alvo, 0 = cor original
+function mixer(hex: string, alvo: string, fracao: number): string {
+  const [r1, g1, b1] = hexToRgb(hex);
+  const [r2, g2, b2] = hexToRgb(alvo);
+  const f = Math.max(0, Math.min(1, fracao));
+  return rgbToHex(r1 + (r2 - r1) * f, g1 + (g2 - g1) * f, b1 + (b2 - b1) * f);
+}
+
+// contraste WCAG, para decidir texto sem escolher no olho
+function contraste(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const [r, g, bl] = hexToRgb(hex).map((v) => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const l1 = lum(a);
+  const l2 = lum(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+// Se a cor se confunde com o fundo, empurra para o lado oposto até dar leitura.
+function visivelSobre(cor: string, fundo: string, alvo = 3): string {
+  let atual = cor;
+  const escuro = luminance(fundo) < 0.5;
+  for (let passo = 0; passo < 10 && contraste(atual, fundo) < alvo; passo += 1) {
+    atual = mixer(atual, escuro ? "#ffffff" : "#000000", 0.16);
+  }
+  return atual;
+}
+
+function themeOf(row: Record<string, unknown>): {
+  primary: string;
+  secondary: string;
+  accent: string;
+  onPrimary: string;
+  bg: string;
+  surface: string;
+  surface2: string;
+  line: string;
+  txt: string;
+  muted: string;
+  escuro: boolean;
+} {
   const pick = (value: unknown, fallback: string) => {
     const text = String(value ?? "").trim();
     return /^#[0-9a-fA-F]{3,8}$/.test(text) ? text : fallback;
   };
   const primary = pick(row.color_primary, "#6deaed");
+  const secondary = pick(row.color_secondary, "#26262b");
+  const accent = pick(row.color_accent, "#9ca3af");
+
+  // A cor secundária é o fundo da casa: o site inteiro puxa o tom dela, escuro ou claro
+  // conforme a luminância escolhida. Antes --bg/--surface eram pretos fixos no código e
+  // --s/--a eram definidos e nunca usados: só a principal aparecia.
+  const escuro = luminance(secondary) < 0.55;
+  // Escuro: fundo puxado para o preto e cartões mais claros que o fundo.
+  // Claro: fundo levemente tingido pela cor e cartões mais claros que o fundo — se o
+  // fundo também fosse branco, cartão e página ficavam indistinguíveis.
+  const bg = escuro ? mixer(secondary, "#000000", 0.78) : mixer(secondary, "#000000", 0.07);
+  const surface = escuro ? mixer(secondary, "#000000", 0.66) : mixer(secondary, "#ffffff", 0.72);
+  const surface2 = escuro ? mixer(secondary, "#000000", 0.56) : mixer(secondary, "#ffffff", 0.5);
+  const line = mixer(secondary, escuro ? "#ffffff" : "#000000", 0.16);
+
   return {
     primary,
-    secondary: pick(row.color_secondary, "#26262b"),
-    accent: pick(row.color_accent, "#9ca3af"),
-    onPrimary: luminance(primary) > 0.55 ? "#101012" : "#ffffff",
+    secondary,
+    accent: visivelSobre(accent, bg, 3.2),
+    onPrimary:
+      contraste(primary, "#ffffff") >= 4.5
+        ? "#ffffff"
+        : contraste(primary, "#101012") >= 4.5
+          ? "#101012"
+          : "#000000",
+    bg,
+    surface,
+    surface2,
+    line,
+    txt: escuro ? "#f4f4f5" : mixer(secondary, "#000000", 0.88),
+    muted: escuro ? mixer(secondary, "#ffffff", 0.66) : mixer(secondary, "#000000", 0.55),
+    escuro,
   };
 }
 
-function appCss(t: { primary: string; secondary: string; accent: string; onPrimary: string }): string {
-  return `:root{color-scheme:dark;--p:${t.primary};--s:${t.secondary};--a:${t.accent};--on:${t.onPrimary};
---bg:#101012;--surface:#191a1d;--surface2:#202127;--line:#2a2b31;--txt:#f4f4f5;--muted:#9b9ba4}
+function appCss(t: ReturnType<typeof themeOf>): string {
+  return `:root{color-scheme:${t.escuro ? "dark" : "light"};--p:${t.primary};--s:${t.secondary};--a:${t.accent};--on:${t.onPrimary};
+--bg:${t.bg};--surface:${t.surface};--surface2:${t.surface2};--line:${t.line};--txt:${t.txt};--muted:${t.muted}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55;padding-bottom:5.5rem;-webkit-font-smoothing:antialiased}
 .wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
-header{position:sticky;top:0;z-index:10;background:rgba(16,16,18,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header{position:sticky;top:0;z-index:10;background:${t.bg}f2;backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
 .logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:cover;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
 header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
@@ -180,7 +262,7 @@ header .city{font-size:.72rem;color:var(--muted)}
 main{padding:1.1rem 0 2rem}
 h1{font-size:1.55rem;font-weight:700;letter-spacing:-.025em;margin:0 0 .25rem}
 .sub{color:var(--muted);font-size:.88rem;margin:0}
-h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--muted);margin:1.6rem 0 .6rem}
+h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--a);margin:1.6rem 0 .6rem}
 .card{display:block;background:var(--surface);border:1px solid var(--line);border-radius:1rem;padding:.9rem 1rem;text-decoration:none;color:inherit;margin-bottom:.55rem}
 .card:active{border-color:var(--p)}
 .card .row{display:flex;justify-content:space-between;gap:.75rem;align-items:baseline}
