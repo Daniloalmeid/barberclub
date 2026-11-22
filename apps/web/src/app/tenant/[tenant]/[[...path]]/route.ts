@@ -21,9 +21,11 @@ import {
   loginStaff,
   panelAgenda,
   panelCustomers,
+  panelFinanceiro,
   panelResumo,
   panelRole,
   readSession,
+  recordPayment,
   revogarMembro,
   sessionHeaders,
   setAppointmentStatus,
@@ -248,7 +250,8 @@ function appPage(options: {
       ? `<a class="on" href="/painel"><span class="ico">▤</span>Painel</a>` +
         `<a href="/painel/agenda"><span class="ico">◷</span>Agenda</a>` +
         `<a href="/painel/clientes"><span class="ico">☺</span>Clientes</a>` +
-        `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>`
+        `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>` +
+        `<a href="/painel/financeiro"><span class="ico">$</span>Caixa</a>`
       : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}`;
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
@@ -630,6 +633,66 @@ function renderClientes(o: {
 }
 
 
+
+// Caixa: entrou de verdade, por meio, contra a meta do dia.
+function renderFinanceiro(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  papel: string;
+  hoje: string;
+  dia: number;
+  semana: number;
+  mes: number;
+  atual: { recebido_cents: number; pagamentos: number; ticket_medio_cents: number; pix_cents: number; dinheiro_cents: number; cartao_cents: number; outros_cents: number; concluidos_cents: number; sem_pagamento: number; meta_cents: number };
+  erro?: string;
+}): string {
+  const meta = Number(o.atual.meta_cents) || 0;
+  const recebido = Number(o.atual.recebido_cents) || 0;
+  const pct = meta > 0 ? Math.min(100, Math.round((recebido / meta) * 100)) : 0;
+  const barra = meta > 0
+    ? `<div style="height:.5rem;border-radius:9999px;background:var(--surface2);overflow:hidden;margin:.5rem 0">` +
+      `<div style="height:100%;width:${pct}%;background:var(--p)"></div></div>` +
+      `<span class="d">${pct}% da meta de ${escapeHtml(money(meta))}</span>`
+    : `<span class="d">Nenhuma meta definida para hoje.</span>`;
+  const linha = (rotulo: string, valor: string) => `<div class="r"><span>${escapeHtml(rotulo)}</span><span>${escapeHtml(valor)}</span></div>`;
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/financeiro`,
+    title: `Caixa — ${o.nome}`,
+    description: `Entradas da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Caixa</h1><p class="sub">Somente dinheiro recebido — faturamento previsto é outra coisa</p>` +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `<h2>Hoje</h2><div class="hours">` +
+      linha("Recebido hoje", money(recebido)) +
+      linha("Atendimentos pagos", String(Number(o.atual.pagamentos) || 0)) +
+      linha("Ticket médio", money(o.atual.ticket_medio_cents)) +
+      `</div><div class="card" style="margin-top:.6rem">${barra}</div>` +
+      `<form method="post" action="/painel/meta" style="display:flex;gap:.5rem;margin:.6rem 0">` +
+      `<input name="meta" inputmode="decimal" value="${meta > 0 ? (meta / 100).toFixed(2).replace(".", ",") : ""}" placeholder="meta do dia (R$)" aria-label="Meta diária" style="flex:1;min-width:0;padding:.6rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+      `<button type="submit" class="ghost" style="margin:0;padding:.6rem 1rem;cursor:pointer;font:inherit">Salvar meta</button></form>` +
+      `<h2>Por forma de pagamento (hoje)</h2><div class="hours">` +
+      linha("Pix", money(o.atual.pix_cents)) +
+      linha("Dinheiro", money(o.atual.dinheiro_cents)) +
+      linha("Cartão", money(o.atual.cartao_cents)) +
+      (Number(o.atual.outros_cents) > 0 ? linha("Outro", money(o.atual.outros_cents)) : "") +
+      `</div>` +
+      `<h2>Períodos</h2><div class="hours">` +
+      linha("Últimos 7 dias", money(o.semana)) +
+      linha("Este mês", money(o.mes)) +
+      `</div>` +
+      `<h2>Pendências</h2><div class="hours">` +
+      linha("Concluídos sem pagamento registrado", String(Number(o.atual.sem_pagamento) || 0)) +
+      `</div>` +
+      `<p class="d" style="color:var(--muted);font-size:.72rem;margin-top:.6rem">Recebido é dinheiro que entrou. Serviço concluído sem pagamento registrado aparece em Pendências, para você cobrar ou lançar.</p>` +
+      `<a class="ghost" href="/painel/agenda">Ir para a agenda</a>`,
+  });
+}
+
 // Quem entra aqui é membro da barbearia (memberships), não cliente. A permissão é
 // conferida no banco (server_api.set_appointment_status recebe o ator e valida o papel).
 
@@ -716,6 +779,8 @@ function renderPainel(o: {
     service_name: string | null;
     staff_name: string | null;
     price_cents: number | null;
+    pago_cents: number;
+    metodo: string | null;
   }>;
   erro?: string;
 }): string {
@@ -773,12 +838,24 @@ function renderPainel(o: {
             )
             .join("");
           const zap = String(a.customer_phone ?? "").replace(/\D/g, "");
+          const pago = Number(a.pago_cents) || 0;
+          const recebivel = (a.status === "confirmed" || a.status === "completed") && pago === 0;
+          const dinheiro = pago > 0
+            ? `<span class="d" style="color:var(--p)">recebido ${escapeHtml(money(pago))}${a.metodo ? ` · ${escapeHtml(a.metodo)}` : ""}</span>`
+            : recebivel
+              ? `<form method="post" action="/painel/receber" style="display:flex;gap:.4rem;margin-top:.4rem">` +
+                `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+                `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+                `<select name="meio" aria-label="Forma de pagamento" style="flex:1;padding:.45rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.76rem">` +
+                `<option value="pix">Pix</option><option value="dinheiro">Dinheiro</option><option value="cartao">Cartão</option><option value="outro">Outro</option></select>` +
+                `<button type="submit" class="ghost" style="margin:0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">Receber ${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</button></form>`
+              : "";
           return (
             `<div class="card"><div class="row"><span class="t">${escapeHtml(fmtTime(a.starts_at, o.timezone))} · ${escapeHtml(a.customer_name ?? "Cliente")}</span>` +
             `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
             `<span class="d">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
             `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
-            `${acoes}</div>`
+            `${dinheiro}${acoes}</div>`
           );
         })
         .join("")
@@ -1071,6 +1148,35 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     });
   }
 
+  if (path?.[0] === "painel" && path[1] === "receber" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
+    const recebido = await recordPayment(userId, texto("agendamento"), texto("meio"));
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}${recebido ? "&ok=1" : "&erro=1"}` }),
+    });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "meta" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const bruto = texto("meta").replace(/\./g, "").replace(",", ".").trim();
+    const valor = Number(bruto === "" ? 0 : bruto);
+    if (!Number.isFinite(valor) || valor < 0) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/financeiro?erro=1" }) });
+    }
+    await setDailyGoal(tenant.id, userId, Math.round(valor * 100));
+    return new Response(null, { status: 303, headers: new Headers({ location: "/painel/financeiro" }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "entrar" && path.length === 2) {
     const login = await loginStaff({ email: texto("email"), password: texto("senha") });
     if (!login.ok || !login.session) {
@@ -1299,6 +1405,49 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
         clientes = clientes.filter((c) => c.dias_sem_voltar !== null && c.dias_sem_voltar >= 45);
       }
       return html(renderClientes({ row, nome, canonical, timezone, papel, busca: termo, filtro, clientes }));
+    }
+    if (path[0] === "painel" && path[1] === "financeiro" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const hoje = todayIn(timezone);
+      const dia = janelaDoDia(hoje, timezone);
+      const semana = { from: `${somaDia(hoje, -6)}T00:00:00${offsetEm(timezone, `${somaDia(hoje, -6)}T12:00:00Z`)}`, to: dia.to };
+      const primeiroDoMes = `${hoje.slice(0, 7)}-01`;
+      const proximoMes = new Date(`${primeiroDoMes}T12:00:00Z`);
+      proximoMes.setUTCMonth(proximoMes.getUTCMonth() + 1);
+      const mes = {
+        from: `${primeiroDoMes}T00:00:00${offsetEm(timezone, `${primeiroDoMes}T12:00:00Z`)}`,
+        to: `${proximoMes.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proximoMes.toISOString().slice(0, 10)}T12:00:00Z`)}`,
+      };
+      const [atual, semanaSoma, mesSoma] = await Promise.all([
+        panelFinanceiro(tenant.id, userId, dia.from, dia.to),
+        panelFinanceiro(tenant.id, userId, semana.from, semana.to),
+        panelFinanceiro(tenant.id, userId, mes.from, mes.to),
+      ]);
+      const erro = new URL(request.url).searchParams.get("erro") ? "Não foi possível salvar a meta." : undefined;
+      return html(
+        renderFinanceiro({
+          row,
+          nome,
+          canonical,
+          timezone,
+          papel,
+          hoje,
+          dia: Number(atual.recebido_cents) || 0,
+          semana: Number(semanaSoma.recebido_cents) || 0,
+          mes: Number(mesSoma.recebido_cents) || 0,
+          atual,
+          erro,
+        }),
+      );
     }
     if (path[0] === "painel" && path.length === 1) {
       const { accessToken, userId } = readSession(request);

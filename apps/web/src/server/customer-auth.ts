@@ -330,6 +330,8 @@ export type PainelAgendamento = {
   service_name: string | null;
   staff_name: string | null;
   price_cents: number | null;
+  pago_cents: number;
+  metodo: string | null;
 };
 
 export async function panelAgenda(tenantId: string, from: string, to: string): Promise<PainelAgendamento[]> {
@@ -514,6 +516,73 @@ export async function panelCustomers(
     p_busca: busca && busca.trim() ? busca.trim() : null,
   }).catch(() => []);
   return linhas;
+}
+
+
+// --- caixa ---------------------------------------------------------------------
+
+export type Recebimento = { payment_id: string; amount_cents: number; method: string };
+
+// Registra o dinheiro que entrou. Não mexe no status do atendimento de propósito:
+// "recebi" e "atendeu" são fatos diferentes, e o banco também os separa.
+export async function recordPayment(
+  actorId: string,
+  appointmentId: string,
+  method: string,
+  amountCents?: number,
+): Promise<Recebimento | null> {
+  try {
+    const linhas = await rpcServer<Recebimento>("record_payment", {
+      p_actor: actorId,
+      p_appointment: appointmentId,
+      p_method: method,
+      p_amount_cents: typeof amountCents === "number" && amountCents > 0 ? amountCents : null,
+    });
+    return linhas[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export type Financeiro = {
+  recebido_cents: number;
+  pagamentos: number;
+  ticket_medio_cents: number;
+  pix_cents: number;
+  dinheiro_cents: number;
+  cartao_cents: number;
+  outros_cents: number;
+  concluidos_cents: number;
+  sem_pagamento: number;
+  meta_cents: number;
+};
+
+const FINANCEIRO_ZERO: Financeiro = {
+  recebido_cents: 0,
+  pagamentos: 0,
+  ticket_medio_cents: 0,
+  pix_cents: 0,
+  dinheiro_cents: 0,
+  cartao_cents: 0,
+  outros_cents: 0,
+  concluidos_cents: 0,
+  sem_pagamento: 0,
+  meta_cents: 0,
+};
+
+export async function panelFinanceiro(
+  tenantId: string,
+  actorId: string,
+  from: string,
+  to: string,
+): Promise<Financeiro> {
+  const linhas = await rpcServer<Financeiro>("panel_financeiro", {
+    p_tenant: tenantId,
+    p_actor: actorId,
+    p_from: from,
+    p_to: to,
+  }).catch(() => []);
+  return { ...FINANCEIRO_ZERO, ...(linhas[0] ?? {}) };
 }
 
 // --- cookies -------------------------------------------------------------------
