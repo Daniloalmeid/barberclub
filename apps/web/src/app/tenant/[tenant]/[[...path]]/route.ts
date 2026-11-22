@@ -888,6 +888,9 @@ function renderDespesas(o: {
     shell: "painel" as const,
     body:
       `<h1>Despesas</h1><p class="sub">Mês de ${escapeHtml(o.mes)}</p>` +
+      `<form method="get" action="/painel/despesas" style="display:flex;gap:.5rem;margin-bottom:.6rem">` +
+      `<input type="month" name="mes" value="${escapeHtml(o.mes)}" aria-label="Escolher o mês" style="flex:1;min-width:0;padding:.6rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+      `<button type="submit" class="ghost" style="margin:0;padding:.6rem .9rem;cursor:pointer;font:inherit">Ver mês</button></form>` +
       (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
       `<h2>Resultado do mês</h2><div class="hours">` +
@@ -1231,6 +1234,24 @@ function renderPainel(o: {
 // O cliente não cria senha: informa nome e WhatsApp e o servidor abre a sessão.
 // Isso basta para book_appointment, que exige auth.uid() e linha em customers.
 
+
+// Dinheiro digitado por gente: "150", "150,00", "1.200,00", "89.90", "R$ 89,90".
+// Ponto seguido de exatamente 2 dígitos é decimal; 3 dígitos é separador de milhar.
+// Antes disso o parser só entendia ponto como milhar, e quem digitasse "89.90" via o
+// valor virar R$ 8.990,00 — erro de 100x que passava calado.
+function valorEmCentavos(bruto: string): number | null {
+  const limpo = String(bruto ?? "").replace(/[^\d,.]/g, "");
+  if (!limpo) return null;
+  let numero: number;
+  if (limpo.includes(",")) {
+    numero = Number(limpo.replace(/\./g, "").replace(",", "."));
+  } else {
+    const partes = limpo.split(".");
+    numero = partes.length === 2 && partes[1].length === 2 ? Number(limpo) : Number(limpo.replace(/\./g, ""));
+  }
+  return Number.isFinite(numero) ? Math.round(numero * 100) : null;
+}
+
 const CAMPO =
   'style="width:100%;margin:.35rem 0 .85rem;padding:.7rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit"';
 
@@ -1533,14 +1554,14 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
     const tenant = await tenantBySlug(slug);
     if (!tenant) return neutral();
-    const preco = Number(texto("preco").replace(/\./g, "").replace(",", "."));
+    const precoCents = valorEmCentavos(texto("preco"));
     const duracao = Number(texto("duracao").replace(/\D/g, ""));
     const ok = await upsertService(tenant.id, userId, {
       id: texto("servico") || null,
       nome: texto("nome"),
       descricao: texto("descricao"),
       duracao: Number.isFinite(duracao) ? duracao : 0,
-      precoCents: Number.isFinite(preco) ? Math.round(preco * 100) : -1,
+      precoCents: precoCents ?? -1,
     });
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/servicos?${ok ? "ok=1" : "erro=1"}` }) });
   }
@@ -1559,23 +1580,34 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
     const tenant = await tenantBySlug(slug);
     if (!tenant) return neutral();
-    const valor = Number(texto("valor").replace(/\./g, "").replace(",", "."));
+    const valorCents = valorEmCentavos(texto("valor"));
     const dataBruta = texto("data");
-    const ok =
-      Boolean(texto("descricao")) &&
-      /^\d{4}-\d{2}-\d{2}$/.test(dataBruta) &&
-      Number.isFinite(valor) &&
-      valor > 0 &&
-      (await addExpense({
-        actorId: userId,
-        tenantId: tenant.id,
-        descricao: texto("descricao"),
-        categoria: texto("categoria") || "outros",
-        valorCents: Math.round(valor * 100),
-        data: dataBruta,
-        meio: texto("meio") || "dinheiro",
-      }));
-    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/despesas?${ok ? "ok=1" : "erro=1"}` }) });
+    const descricao = texto("descricao");
+    const erro =
+      descricao.trim().length < 2
+        ? "descricao"
+        : !/^\d{4}-\d{2}-\d{2}$/.test(dataBruta)
+          ? "data"
+          : valorCents === null || valorCents <= 0
+            ? "valor"
+            : null;
+    if (erro) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `/painel/despesas?erro=${erro}` }) });
+    }
+    const ok = await addExpense({
+      actorId: userId,
+      tenantId: tenant.id,
+      descricao,
+      categoria: texto("categoria") || "outros",
+      valorCents: valorCents as number,
+      data: dataBruta,
+      meio: texto("meio") || "dinheiro",
+    });
+    const mesDaDespesa = dataBruta.slice(0, 7);
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `/painel/despesas?mes=${mesDaDespesa}&${ok ? "ok=1" : "erro=1"}` }),
+    });
   }
 
   if (path?.[0] === "painel" && path[1] === "despesas" && path[2] === "cancelar") {
@@ -1708,8 +1740,7 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
     // BBT primeiro: se o resgate falhar (saldo, teto, repetição), o pagamento não entra
     // pela metade — o cliente não fica com desconto sem o sistema saber.
-    const bbtReais = Number(texto("bbt").replace(/\./g, "").replace(",", "."));
-    const bbtCents = Number.isFinite(bbtReais) && bbtReais > 0 ? Math.round(bbtReais * 100) : 0;
+    const bbtCents = valorEmCentavos(texto("bbt")) ?? 0;
     if (bbtCents > 0) {
       const tenant = await tenantBySlug(slug);
       const okBbt = tenant ? await debitCashback(userId, tenant.id, texto("agendamento"), bbtCents, "BBT usado no atendimento") : false;
@@ -1737,12 +1768,11 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     }
     const tenant = await tenantBySlug(slug);
     if (!tenant) return neutral();
-    const bruto = texto("meta").replace(/\./g, "").replace(",", ".").trim();
-    const valor = Number(bruto === "" ? 0 : bruto);
-    if (!Number.isFinite(valor) || valor < 0) {
+    const cents = valorEmCentavos(texto("meta")) ?? 0;
+    if (cents < 0) {
       return new Response(null, { status: 303, headers: new Headers({ location: "/painel/financeiro?erro=1" }) });
     }
-    await setDailyGoal(tenant.id, userId, Math.round(valor * 100));
+    await setDailyGoal(tenant.id, userId, cents);
     return new Response(null, { status: 303, headers: new Headers({ location: "/painel/financeiro" }) });
   }
 
@@ -2093,7 +2123,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const papel = await panelRole(tenant.id, userId);
       if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
       const hoje = todayIn(timezone);
-      const primeiro = `${hoje.slice(0, 7)}-01`;
+      const mesPedido = new URL(request.url).searchParams.get("mes") ?? "";
+      const mesBase = /^\d{4}-\d{2}$/.test(mesPedido) ? mesPedido : hoje.slice(0, 7);
+      const primeiro = `${mesBase}-01`;
       const proximo = new Date(`${primeiro}T12:00:00Z`);
       proximo.setUTCMonth(proximo.getUTCMonth() + 1);
       const ultimo = new Date(proximo.getTime() - 86400000).toISOString().slice(0, 10);
@@ -2110,11 +2142,20 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           nome,
           canonical,
           papel,
-          mes: hoje.slice(0, 7),
+          mes: mesBase,
           despesas,
           resultado: resumoMes,
           ok: busca.get("ok") === "1",
-          erro: busca.get("erro") ? "Não foi possível lançar — confira descrição, valor e data." : undefined,
+          erro:
+            busca.get("erro") === "valor"
+              ? "Valor não entendido. Escreva como 150 ou 150,00."
+              : busca.get("erro") === "data"
+                ? "Data inválida."
+                : busca.get("erro") === "descricao"
+                  ? "Descrição muito curta — escreva o que foi comprado."
+                  : busca.get("erro")
+                    ? "Não foi possível lançar a despesa."
+                    : undefined,
         }),
       );
     }
