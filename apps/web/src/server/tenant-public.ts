@@ -115,7 +115,7 @@ export async function listServices(slug: string): Promise<ServicePublic[]> {
 }
 
 // Equipe e horários livres: mesmas RPCs públicas (anon EXECUTE).
-export type StaffPublic = { staff_id: string; display_name: string; photo_url: string | null; short_bio: string | null };
+export type StaffPublic = { staff_id: string; display_name: string; photo_url: string | null; short_bio: string | null; service_ids: string[] };
 export type SlotPublic = { staff_id: string; starts_at: string; ends_at: string };
 
 async function rpcPublic<T>(fn: string, cols: string, body: Record<string, unknown>): Promise<T[]> {
@@ -142,7 +142,7 @@ async function rpcPublic<T>(fn: string, cols: string, body: Record<string, unkno
 
 export async function listStaff(slug: string): Promise<StaffPublic[]> {
   try {
-    return await rpcPublic<StaffPublic>("list_staff", "staff_id,display_name,photo_url,short_bio", { p_slug: slug });
+    return await rpcPublic<StaffPublic>("list_staff", "staff_id,display_name,photo_url,short_bio,service_ids", { p_slug: slug });
   } catch {
     return [];
   }

@@ -447,7 +447,10 @@ function renderHome(o: {
     : `<p class="empty">Os serviços estão sendo cadastrados.</p>`;
   const team = o.staff.length
     ? `<h2>Equipe</h2><div class="team">${o.staff
-        .map((member) => `<div class="who"><div class="avatar">${escapeHtml(initials(member.display_name))}</div>${escapeHtml(member.display_name)}</div>`)
+        .map(
+          (member) =>
+            `<a class="who" href="/agendar?profissional=${encodeURIComponent(member.staff_id)}" style="text-decoration:none;color:inherit"><div class="avatar">${escapeHtml(initials(member.display_name))}</div>${escapeHtml(member.display_name)}</a>`,
+        )
         .join("")}</div>`
     : "";
   const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}${contato}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
@@ -474,14 +477,23 @@ async function renderBooking(o: {
   const servico = (params.get("servico") ?? "").trim();
   const dia = (params.get("dia") ?? "").trim();
   const hora = (params.get("hora") ?? "").trim();
+  // "" = ainda não escolheu · "todos" = sem preferência · id = profissional escolhido
+  const profissional = (params.get("profissional") ?? "").trim();
   const services = await listServices(o.slug);
+  const equipe = await listStaff(o.slug);
+  const nomeDe = new Map(equipe.map((item) => [item.staff_id, item.display_name]));
+  const primeiroNome = new Map(equipe.map((item) => [item.staff_id, item.display_name.split(/\s+/)[0] ?? item.display_name]));
   const base = {
     row: o.row,
     name: o.nome,
     canonical: `${o.canonical}agendar`,
     title: `Agendar — ${o.nome}`,
-    description: `Escolha serviço, dia e horário na ${o.nome}.`,
+    description: `Escolha serviço, profissional e horário na ${o.nome}.`,
     nav: "agendar" as const,
+  };
+  const qp = (extra: Record<string, string>) => {
+    const q = new URLSearchParams(extra);
+    return `/agendar?${q.toString()}`;
   };
 
   if (!services.length) {
@@ -489,51 +501,68 @@ async function renderBooking(o: {
   }
 
   const service = services.find((item) => item.service_id === servico);
+
+  // Passo 1 — serviço. Se já veio um profissional, só mostra o que ele faz.
   if (!service) {
-    const list = services
+    const doProfissional =
+      profissional && profissional !== "todos"
+        ? equipe.find((item) => item.staff_id === profissional)?.service_ids ?? []
+        : null;
+    const lista = services.filter((item) => !doProfissional || doProfissional.includes(item.service_id));
+    const cartoes = lista
       .map(
         (item) =>
-          `<a class="card" href="/agendar?servico=${escapeHtml(item.service_id)}"><div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${escapeHtml(money(item.price_cents))}</span></div><span class="d">${Number(item.duration_min)} min</span></a>`,
+          `<a class="card" href="${qp(profissional ? { servico: item.service_id, profissional } : { servico: item.service_id })}"><div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${escapeHtml(money(item.price_cents))}</span></div><span class="d">${Number(item.duration_min)} min</span></a>`,
       )
       .join("");
-    return appPage({ ...base, body: `<h1>Escolha o serviço</h1><p class="sub">Passo 1 de 3</p>${list}` });
-  }
-
-  const serviceLabel = escapeHtml(service.name);
-  const back = `<a class="ghost" href="/agendar">Trocar serviço</a>`;
-
-  if (!dia) {
-    const days = nextDays(todayIn(o.timezone), 14);
-    const grid = days
-      .map((day) => {
-        const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
-        return `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${day}">${escapeHtml(DIAS[weekday])}<br>${day.slice(8, 10)}/${day.slice(5, 7)}</a>`;
-      })
-      .join("");
+    const quem = profissional && profissional !== "todos" ? `${nomeDe.get(profissional) ?? ""} · ` : "";
     return appPage({
       ...base,
-      body: `<h1>${serviceLabel}</h1><p class="sub">Passo 2 de 3 · escolha o dia</p><div class="days">${grid}</div>${back}`,
+      body: `<h1>Escolha o serviço</h1><p class="sub">${escapeHtml(quem)}Passo 1 de 3</p>${cartoes}`,
     });
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) {
-    return appPage({ ...base, body: `<h1>${serviceLabel}</h1><p class="empty">Dia inválido.</p>${back}` });
+  const serviceLabel = escapeHtml(service.name);
+
+  // Passo 2 — profissional. "Sem preferência" vem primeiro: a maioria só quer cortar.
+  if (!profissional) {
+    const candidatos = equipe.filter((item) => item.service_ids.includes(service.service_id));
+    const cards =
+      `<a class="card" href="${qp({ servico: service.service_id, profissional: "todos" })}" style="border-color:var(--p)">` +
+      `<div class="row"><span class="t">Sem preferência</span><span class="price">→</span></div>` +
+      `<span class="d">O primeiro horário livre, com qualquer profissional</span></a>` +
+      candidatos
+        .map(
+          (item) =>
+            `<a class="card" href="${qp({ servico: service.service_id, profissional: item.staff_id })}"><div class="row"><span class="t">${escapeHtml(item.display_name)}</span><span class="price">→</span></div><span class="d">Ver só os horários dele</span></a>`,
+        )
+        .join("");
+    return appPage({
+      ...base,
+      body: `<h1>${serviceLabel}</h1><p class="sub">Passo 2 de 3 · com quem?</p>${cards}`,
+    });
   }
 
-  const slots = await listFreeSlots(o.slug, service.service_id, dia);
-  const equipe = await listStaff(o.slug);
-  const primeiroNome = new Map(equipe.map((item) => [item.staff_id, item.display_name.split(/\s+/)[0] ?? item.display_name]));
-  const dayLabel = fmtDay(`${dia}T12:00:00Z`, o.timezone);
+  const staffFiltro = profissional === "todos" ? undefined : profissional;
+  const staffLabel = profissional === "todos" ? "" : ` · ${nomeDe.get(profissional) ?? ""}`;
+  const voltarProf = `<a class="ghost" href="${qp({ servico: service.service_id })}">Trocar profissional</a>`;
 
+  // Confirmação do horário escolhido.
   if (hora) {
+    const slots = await listFreeSlots(o.slug, service.service_id, dia, staffFiltro);
     const staffId = (params.get("staff") ?? "").trim();
     const chosen = slots.find((slot) => slot.starts_at === hora && (!staffId || slot.staff_id === staffId));
     const label = chosen ? fmtTime(chosen.starts_at, o.timezone) : hora.slice(11, 16);
     const quem = chosen ? (primeiroNome.get(chosen.staff_id) ?? "") : "";
-    const next = `/agendar?servico=${encodeURIComponent(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(hora)}&staff=${encodeURIComponent(chosen?.staff_id ?? staffId)}`;
+    const dayLabel = fmtDay(`${dia}T12:00:00Z`, o.timezone);
+    const next = qp({
+      servico: service.service_id,
+      profissional,
+      dia,
+      hora,
+      staff: chosen?.staff_id ?? staffId,
+    });
     const { accessToken } = readSession(o.request);
-    // Com sessão: botão que grava de verdade. Sem sessão: o mesmo botão vira entrada,
-    // porque book_appointment exige cliente identificado.
     const acao = accessToken
       ? `<form method="post" action="/confirmar">` +
         `<input type="hidden" name="servico" value="${escapeHtml(service.service_id)}">` +
@@ -545,25 +574,61 @@ async function renderBooking(o: {
     return appPage({
       ...base,
       body:
-        `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)} às ${escapeHtml(label)}${quem ? ` · ${escapeHtml(quem)}` : ""}</p>` +
+        `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · ${escapeHtml(dayLabel)} às ${escapeHtml(label)}${quem ? ` · ${escapeHtml(quem)}` : ""}</p>` +
         `<div class="card"><div class="row"><span class="t">${escapeHtml(service.name)}</span><span class="price">${escapeHtml(money(service.price_cents))}</span></div><span class="d">${Number(service.duration_min)} min</span></div>` +
         acao +
-        `<a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}">Escolher outro horário</a>`,
+        `<a class="ghost" href="${qp({ servico: service.service_id, profissional, dia })}">Escolher outro horário</a>`,
     });
   }
+
+  // Passo 3 — dia e horário na mesma tela: escolher o dia primeiro e só então ver as horas
+  // é um toque a mais para quem já escolheu serviço e profissional.
+  const dias = nextDays(todayIn(o.timezone), 14);
+  let alvo = /^\d{4}-\d{2}-\d{2}$/.test(dia) && dias.includes(dia) ? dia : "";
+  let slots: Awaited<ReturnType<typeof listFreeSlots>> = [];
+  if (alvo) {
+    slots = await listFreeSlots(o.slug, service.service_id, alvo, staffFiltro);
+  } else {
+    // Sem dia escolhido: mostra o primeiro dia que tenha horário, no máximo 7 à frente.
+    for (const candidato of dias.slice(0, 7)) {
+      const livres = await listFreeSlots(o.slug, service.service_id, candidato, staffFiltro);
+      if (livres.length) {
+        alvo = candidato;
+        slots = livres;
+        break;
+      }
+    }
+  }
+
+  const strip = dias
+    .map((day) => {
+      const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+      return `<a class="${day === alvo ? "on" : ""}" href="${qp({ servico: service.service_id, profissional, dia: day })}">${escapeHtml(DIAS[weekday])}<br>${day.slice(8, 10)}/${day.slice(5, 7)}</a>`;
+    })
+    .join("");
 
   const grid = slots.length
     ? slots
         .map((slot) => {
           const quem = primeiroNome.get(slot.staff_id) ?? "";
-          return `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(slot.starts_at)}&staff=${encodeURIComponent(slot.staff_id)}">${escapeHtml(fmtTime(slot.starts_at, o.timezone))}${quem ? `<br><span style="font-size:.6rem;opacity:.65">${escapeHtml(quem)}</span>` : ""}</a>`;
+          return `<a href="${qp({ servico: service.service_id, profissional, dia: alvo, hora: slot.starts_at, staff: slot.staff_id })}">${escapeHtml(fmtTime(slot.starts_at, o.timezone))}${quem ? `<br><span style="font-size:.6rem;opacity:.65">${escapeHtml(quem)}</span>` : ""}</a>`;
         })
         .join("")
     : "";
-  const body = grid
-    ? `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · ${escapeHtml(dayLabel)}</p><div class="slots">${grid}</div><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`
-    : `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)}</p><p class="empty">Nenhum horário livre neste dia. Escolha outro dia.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`;
-  return appPage({ ...base, body });
+
+  const diaLabel = alvo ? fmtDay(`${alvo}T12:00:00Z`, o.timezone) : "";
+  const corpo = grid
+    ? `<h2>${escapeHtml(diaLabel)}</h2><div class="slots">${grid}</div>`
+    : `<p class="empty">${alvo ? `Nenhum horário livre em ${escapeHtml(diaLabel)}.` : "Nenhum horário livre nos próximos dias."} Escolha outro dia.</p>`;
+
+  return appPage({
+    ...base,
+    body:
+      `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · escolha o dia e a hora${escapeHtml(staffLabel)}</p>` +
+      `<div class="days" style="grid-template-columns:repeat(4,1fr);margin-bottom:.8rem">${strip}</div>` +
+      corpo +
+      voltarProf,
+  });
 }
 
 function renderEquipe(o: {
