@@ -118,6 +118,7 @@ export async function listServices(slug: string): Promise<ServicePublic[]> {
 export type StaffPublic = { staff_id: string; display_name: string; photo_url: string | null; short_bio: string | null; service_ids: string[] };
 export type ProdutoPublic = {
   product_id: string;
+  slug: string;
   name: string;
   description: string | null;
   category: string;
@@ -125,6 +126,8 @@ export type ProdutoPublic = {
   compare_price_cents: number | null;
   image_url: string | null;
 };
+
+export type ProdutoDetalhe = ProdutoPublic & { details: string | null; brand: string | null; size_label: string | null };
 
 export type SlotPublic = { staff_id: string; starts_at: string; ends_at: string };
 
@@ -162,11 +165,24 @@ export async function listProducts(slug: string): Promise<ProdutoPublic[]> {
   try {
     return await rpcPublic<ProdutoPublic>(
       "list_products",
-      "product_id,name,description,category,price_cents,compare_price_cents,image_url",
+      "product_id,slug,name,description,category,price_cents,compare_price_cents,image_url",
       { p_slug: slug },
     );
   } catch {
     return [];
+  }
+}
+
+export async function getProduct(slug: string, productSlug: string): Promise<ProdutoDetalhe | null> {
+  try {
+    const linhas = await rpcPublic<ProdutoDetalhe>(
+      "get_product",
+      "product_id,slug,name,description,details,category,brand,size_label,price_cents,compare_price_cents,image_url",
+      { p_slug: slug, p_product_slug: productSlug },
+    );
+    return linhas[0] ?? null;
+  } catch {
+    return null;
   }
 }
 

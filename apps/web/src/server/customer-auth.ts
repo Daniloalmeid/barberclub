@@ -1057,6 +1057,10 @@ export type ProdutoPainel = {
   compare_price_cents: number | null;
   active: boolean;
   image_url: string | null;
+  slug: string;
+  details: string | null;
+  brand: string | null;
+  size_label: string | null;
 };
 
 export async function panelProducts(tenantId: string, actorId: string): Promise<ProdutoPainel[]> {
@@ -1072,6 +1076,9 @@ export async function upsertProduct(o: {
   categoria: string;
   precoCents: number;
   precoDeCents: number | null;
+  detalhes?: string;
+  marca?: string;
+  tamanho?: string;
 }): Promise<boolean> {
   try {
     const linhas = await rpcServer<string>("upsert_product", {
@@ -1083,6 +1090,9 @@ export async function upsertProduct(o: {
       p_category: o.categoria,
       p_price_cents: Math.round(o.precoCents),
       p_compare_price_cents: o.precoDeCents === null ? null : Math.round(o.precoDeCents),
+      p_details: o.detalhes ?? null,
+      p_brand: o.marca ?? null,
+      p_size_label: o.tamanho ?? null,
     });
     return Boolean(linhas[0]);
   } catch {

@@ -3,7 +3,7 @@ import { isSlugShape } from "@barberclub/config/slug";
 import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
 import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
-import { getTenantPublic, listFreeSlots, listProducts, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
+import { getProduct, getTenantPublic, listFreeSlots, listProducts, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
 import {
   aceitarConvite,
   bookWithSession,
@@ -1203,11 +1203,9 @@ function renderProdutos(o: {
   row: Record<string, unknown>;
   nome: string;
   canonical: string;
-  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; image_url: string | null }>;
+  produtos: Array<{ product_id: string; slug: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; image_url: string | null }>;
   whatsapp: unknown;
 }): string {
-  const wa = whatsappLink(o.whatsapp, o.nome);
-  const numero = String(o.whatsapp ?? "").replace(/\D/g, "");
   const categorias = [...new Set(o.produtos.map((p) => p.category))];
   const cards = o.produtos
     .map((item) => {
@@ -1220,24 +1218,20 @@ function renderProdutos(o: {
         .slice(0, 2)
         .map((palavra) => palavra[0]?.toUpperCase() ?? "")
         .join("") || item.name.slice(0, 2).toUpperCase();
-      const mensagem = `Ola! Quero o ${item.name} (${money(por)}) que vi no site da ${o.nome}.`;
-      const link = numero
-        ? `https://wa.me/${numero}?text=${encodeURIComponent(mensagem)}`
-        : wa || "/";
       return (
         `<article class="prod">` +
-        `<div class="prod-media${item.image_url ? " tem-foto" : ""}">` +
+        `<a href="/produtos/${encodeURIComponent(item.slug)}" style="text-decoration:none;color:inherit"><div class="prod-media${item.image_url ? " tem-foto" : ""}">` +
         (off > 0 ? `<span class="prod-off">-${off}%</span>` : "") +
         (item.image_url
           ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`
           : `<span class="prod-ini">${escapeHtml(iniciais)}</span>`) +
-        `</div>` +
+        `</div></a>` +
         `<div class="prod-body">` +
         `<span class="prod-cat">${escapeHtml(item.category)}</span>` +
-        `<h3 class="prod-tit">${escapeHtml(item.name)}</h3>` +
+        `<a href="/produtos/${encodeURIComponent(item.slug)}" style="text-decoration:none;color:inherit"><h3 class="prod-tit">${escapeHtml(item.name)}</h3></a>` +
         (item.description ? `<p class="prod-desc">${escapeHtml(item.description)}</p>` : "") +
         `<div class="prod-preco"><span class="agora">${escapeHtml(money(por))}</span>${de > por ? `<span class="antes">${escapeHtml(money(de))}</span>` : ""}</div>` +
-        `<a class="prod-btn" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Reservar</a>` +
+        `<a class="prod-btn" href="/produtos/${encodeURIComponent(item.slug)}">Ver produto</a>` +
         `</div></article>`
       );
     })
@@ -1269,7 +1263,7 @@ function renderProdutosPainel(o: {
   nome: string;
   canonical: string;
   papel: string;
-  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; active: boolean; image_url: string | null }>;
+  produtos: Array<{ product_id: string; name: string; description: string | null; details: string | null; category: string; brand: string | null; size_label: string | null; price_cents: number; compare_price_cents: number | null; active: boolean; image_url: string | null }>;
   ok?: boolean;
   erro?: string;
 }): string {
@@ -1290,6 +1284,9 @@ function renderProdutosPainel(o: {
             `<label class="d" for="c_${item.product_id}">Categoria</label><input id="c_${item.product_id}" name="categoria" value="${escapeHtml(item.category)}" maxlength=30 ${campo}>` +
             `<label class="d" for="p_${item.product_id}">Preço (R$)</label><input id="p_${item.product_id}" name="preco" value="${reais(item.price_cents)}" inputmode="decimal" required ${campo}>` +
             `<label class="d" for="d2_${item.product_id}">Preço antigo (deixe vazio se não há)</label><input id="d2_${item.product_id}" name="preco_de" value="${reais(item.compare_price_cents)}" inputmode="decimal" ${campo}>` +
+            `<label class="d" for="m_${item.product_id}">Marca</label><input id="m_${item.product_id}" name="marca" value="${escapeHtml(item.brand ?? "")}" maxlength=40 ${campo}>` +
+            `<label class="d" for="t_${item.product_id}">Tamanho / volume</label><input id="t_${item.product_id}" name="tamanho" value="${escapeHtml(item.size_label ?? "")}" maxlength=30 ${campo}>` +
+            `<label class="d" for="det_${item.product_id}">Descrição completa</label><textarea id="det_${item.product_id}" name="detalhes" rows="4" maxlength=1200 ${campo}>${escapeHtml(item.details ?? "")}</textarea>` +
             `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.3rem 0 0">Salvar</button></form>` +
             `<form method="post" action="/painel/produtos/foto" enctype="multipart/form-data" style="margin-top:.35rem">` +
             `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
@@ -1324,9 +1321,86 @@ function renderProdutosPainel(o: {
       `<label class="d" for="nc">Categoria</label><input id="nc" name="categoria" value="Cabelo" maxlength=30 ${campo}>` +
       `<label class="d" for="np">Preço (R$)</label><input id="np" name="preco" inputmode="decimal" required ${campo}>` +
       `<label class="d" for="npd">Preço antigo (opcional)</label><input id="npd" name="preco_de" inputmode="decimal" ${campo}>` +
+      `<label class="d" for="nm">Marca</label><input id="nm" name="marca" maxlength=40 ${campo}>` +
+      `<label class="d" for="nt">Tamanho / volume</label><input id="nt" name="tamanho" maxlength=30 placeholder="120 g" ${campo}>` +
+      `<label class="d" for="ndet">Descrição completa (aparece na página do produto)</label><textarea id="ndet" name="detalhes" rows="4" maxlength=1200 ${campo}></textarea>` +
       `</div><button class="cta" type="submit">Adicionar</button></form>` +
       `<h2>Cadastrados</h2>${lista}` +
       `<a class="ghost" href="/produtos">Ver a vitrine do cliente</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
+  });
+}
+
+
+// Página do produto: o card é vitrine, aqui é onde a pessoa decide.
+function renderProduto(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  produto: { slug: string; name: string; description: string | null; details: string | null; category: string; brand: string | null; size_label: string | null; price_cents: number; compare_price_cents: number | null; image_url: string | null };
+  whatsapp: unknown;
+  parecidos: Array<{ slug: string; name: string; price_cents: number; image_url: string | null }>;
+}): string {
+  const p = o.produto;
+  const de = Number(p.compare_price_cents) || 0;
+  const por = Number(p.price_cents) || 0;
+  const off = de > por && por > 0 ? Math.round(((de - por) / de) * 100) : 0;
+  const numero = String(o.whatsapp ?? "").replace(/\D/g, "");
+  const mensagem = `Ola! Quero o ${p.name} (${money(por)}) que vi no site da ${o.nome}.`;
+  const link = numero ? `https://wa.me/${numero}?text=${encodeURIComponent(mensagem)}` : whatsappLink(o.whatsapp, o.nome) || "#";
+  const iniciais = p.name
+    .split(/\s+/)
+    .filter((palavra) => palavra.length > 2)
+    .slice(0, 2)
+    .map((palavra) => palavra[0]?.toUpperCase() ?? "")
+    .join("") || p.name.slice(0, 2).toUpperCase();
+
+  const ficha = [
+    ["Marca", p.brand],
+    ["Tamanho", p.size_label],
+    ["Categoria", p.category],
+  ]
+    .filter(([, valor]) => Boolean(valor))
+    .map(([rotulo, valor]) => `<div class="r"><span>${escapeHtml(String(rotulo))}</span><span>${escapeHtml(String(valor))}</span></div>`)
+    .join("");
+
+  const parecidos = o.parecidos.length
+    ? `<h2>Outros da mesma categoria</h2><div class="prods">${o.parecidos
+        .map(
+          (item) =>
+            `<a class="prod" href="/produtos/${encodeURIComponent(item.slug)}"><div class="prod-media${item.image_url ? " tem-foto" : ""}">` +
+            (item.image_url ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" loading="lazy">` : `<span class="prod-ini">${escapeHtml(item.name.slice(0, 2).toUpperCase())}</span>`) +
+            `</div><div class="prod-body"><h3 class="prod-tit">${escapeHtml(item.name)}</h3>` +
+            `<div class="prod-preco"><span class="agora">${escapeHtml(money(item.price_cents))}</span></div></div></a>`,
+        )
+        .join("")}</div>`
+    : "";
+
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}produtos/${p.slug}`,
+    title: `${p.name} — ${o.nome}`,
+    description: p.description ?? `Produto da ${o.nome}.`,
+    nav: "produtos" as const,
+    body:
+      `<div class="prod-media${p.image_url ? " tem-foto" : ""}" style="border-radius:1rem;margin-bottom:.8rem">` +
+      (off > 0 ? `<span class="prod-off">-${off}%</span>` : "") +
+      (p.image_url ? `<img src="${escapeHtml(p.image_url)}" alt="${escapeHtml(p.name)}">` : `<span class="prod-ini" style="font-size:2rem">${escapeHtml(iniciais)}</span>`) +
+      `</div>` +
+      `<span class="prod-cat">${escapeHtml(p.category)}</span>` +
+      `<h1>${escapeHtml(p.name)}</h1>` +
+      `<div class="prod-preco" style="margin:.4rem 0"><span class="agora" style="font-size:1.3rem">${escapeHtml(money(por))}</span>${de > por ? `<span class="antes" style="font-size:.85rem">${escapeHtml(money(de))}</span>` : ""}</div>` +
+      (p.description ? `<p class="sub" style="margin-bottom:.6rem">${escapeHtml(p.description)}</p>` : "") +
+      (ficha ? `<div class="hours">${ficha}</div>` : "") +
+      (p.details ? `<h2>Sobre o produto</h2><div class="card"><p style="margin:0;font-size:.86rem;line-height:1.55">${escapeHtml(p.details)}</p></div>` : "") +
+      `<h2>Como reservar</h2><div class="hours">` +
+      `<div class="r"><span>1</span><span>Toque em Reservar — abre o WhatsApp com a mensagem pronta</span></div>` +
+      `<div class="r"><span>2</span><span>A barbearia confirma se tem em estoque</span></div>` +
+      `<div class="r"><span>3</span><span>Pagamento e retirada no balcão</span></div>` +
+      `</div>` +
+      `<a class="cta" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Reservar no WhatsApp</a>` +
+      parecidos +
+      `<a class="ghost" href="/produtos">Ver todos os produtos</a>`,
   });
 }
 
@@ -2009,6 +2083,9 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
       categoria: texto("categoria") || "produto",
       precoCents: preco,
       precoDeCents: precoDe !== null && precoDe > preco ? precoDe : null,
+      detalhes: texto("detalhes"),
+      marca: texto("marca"),
+      tamanho: texto("tamanho"),
     });
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
   }
@@ -2466,6 +2543,17 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
   if (path && path.length > 0) {
+    if (path[0] === "produtos" && path.length === 2 && path[1]) {
+      const alvo = decodeURIComponent(String(path[1]));
+      const produto = await getProduct(slug, alvo);
+      if (!produto) return neutral();
+      const todos = await listProducts(slug);
+      const parecidos = todos
+        .filter((item) => item.category === produto.category && item.slug !== produto.slug)
+        .slice(0, 4)
+        .map((item) => ({ slug: item.slug, name: item.name, price_cents: Number(item.price_cents), image_url: item.image_url }));
+      return html(renderProduto({ row, nome, canonical, produto, whatsapp: row.whatsapp_public, parecidos }));
+    }
     if (path[0] === "produtos" && path.length === 1) {
       const produtos = await listProducts(slug);
       return html(renderProdutos({ row, nome, canonical, produtos, whatsapp: row.whatsapp_public }));
