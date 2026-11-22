@@ -1045,6 +1045,64 @@ export async function setStaffServices(tenantId: string, actorId: string, staffI
   }
 }
 
+
+// --- produtos -------------------------------------------------------------------
+
+export type ProdutoPainel = {
+  product_id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  price_cents: number;
+  compare_price_cents: number | null;
+  active: boolean;
+};
+
+export async function panelProducts(tenantId: string, actorId: string): Promise<ProdutoPainel[]> {
+  return rpcServer<ProdutoPainel>("panel_products", { p_tenant: tenantId, p_actor: actorId }).catch(() => []);
+}
+
+export async function upsertProduct(o: {
+  tenantId: string;
+  actorId: string;
+  productId?: string | null;
+  nome: string;
+  descricao: string;
+  categoria: string;
+  precoCents: number;
+  precoDeCents: number | null;
+}): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<string>("upsert_product", {
+      p_tenant: o.tenantId,
+      p_actor: o.actorId,
+      p_product: o.productId ?? null,
+      p_name: o.nome,
+      p_description: o.descricao,
+      p_category: o.categoria,
+      p_price_cents: Math.round(o.precoCents),
+      p_compare_price_cents: o.precoDeCents === null ? null : Math.round(o.precoDeCents),
+    });
+    return Boolean(linhas[0]);
+  } catch {
+    return false;
+  }
+}
+
+export async function setProductActive(tenantId: string, actorId: string, productId: string, ativo: boolean): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("set_product_active", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_product: productId,
+      p_active: ativo,
+    });
+    return linhas[0] === ativo;
+  } catch {
+    return false;
+  }
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {

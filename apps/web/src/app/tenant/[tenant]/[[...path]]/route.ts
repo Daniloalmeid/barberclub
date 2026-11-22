@@ -31,6 +31,7 @@ import {
   linkStaffUser,
   panelCommissions,
   panelCustomers,
+  panelProducts,
   panelExpenses,
   panelFinanceiro,
   panelResultado,
@@ -38,6 +39,7 @@ import {
   panelStaff,
   panelResumo,
   setCommission,
+  setProductActive,
   setStaffActive,
   setStaffServices,
   panelRole,
@@ -45,6 +47,7 @@ import {
   debitCashback,
   readSession,
   recordPayment,
+  upsertProduct,
   rescheduleAppointment,
   revogarMembro,
   sessionHeaders,
@@ -867,6 +870,7 @@ function renderVisaoGeral(o: {
       modulo("/painel/despesas", "Despesas", "O que saiu este mês e o que sobrou") +
       modulo("/painel/barbearia", "Minha barbearia", "Nome, contato, cores e horários") +
       modulo("/painel/servicos", "Serviços", "Preços e duração do que você vende") +
+      modulo("/painel/produtos", "Produtos", "A vitrine que o cliente vê no app") +
       (o.sumidos > 0
         ? `<a class="card" href="/painel/clientes?filtro=sumidos" style="border-color:var(--p)"><div class="row"><span class="t">Clientes sumidos</span><span class="price">${o.sumidos}</span></div><span class="d">Sem voltar há 45 dias ou mais — hora de chamar</span></a>`
         : "") +
@@ -1251,6 +1255,62 @@ function renderProdutos(o: {
       `<h1>Produtos</h1><p class="sub">${o.produtos.length} itens${categorias.length ? ` · ${escapeHtml(categorias.join(" · "))}` : ""}</p>` +
       corpo +
       `<a class="ghost" href="/agendar">Agendar um horário</a>`,
+  });
+}
+
+
+// Produtos no painel: cadastrar, corrigir preço, tirar da vitrine.
+function renderProdutosPainel(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  papel: string;
+  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; active: boolean }>;
+  ok?: boolean;
+  erro?: string;
+}): string {
+  const campo = CAMPO.replace(".85rem", ".3rem");
+  const reais = (cents: number | null) => (cents === null ? "" : (Number(cents) / 100).toFixed(2).replace(".", ","));
+  const lista = o.produtos.length
+    ? o.produtos
+        .map(
+          (item) =>
+            `<div class="card"><form method="post" action="/painel/produtos">` +
+            `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
+            `<div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${item.active ? escapeHtml(money(item.price_cents)) : "fora da vitrine"}</span></div>` +
+            `<label class="d" for="n_${item.product_id}">Nome</label><input id="n_${item.product_id}" name="nome" value="${escapeHtml(item.name)}" required maxlength=80 ${campo}>` +
+            `<label class="d" for="d_${item.product_id}">Descrição</label><input id="d_${item.product_id}" name="descricao" value="${escapeHtml(item.description ?? "")}" maxlength=160 ${campo}>` +
+            `<label class="d" for="c_${item.product_id}">Categoria</label><input id="c_${item.product_id}" name="categoria" value="${escapeHtml(item.category)}" maxlength=30 ${campo}>` +
+            `<label class="d" for="p_${item.product_id}">Preço (R$)</label><input id="p_${item.product_id}" name="preco" value="${reais(item.price_cents)}" inputmode="decimal" required ${campo}>` +
+            `<label class="d" for="d2_${item.product_id}">Preço antigo (deixe vazio se não há)</label><input id="d2_${item.product_id}" name="preco_de" value="${reais(item.compare_price_cents)}" inputmode="decimal" ${campo}>` +
+            `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.3rem 0 0">Salvar</button></form>` +
+            `<form method="post" action="/painel/produtos/ativo" style="margin-top:.3rem">` +
+            `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
+            `<input type="hidden" name="ativo" value="${item.active ? "0" : "1"}">` +
+            `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">${item.active ? "Tirar da vitrine" : "Voltar para a vitrine"}</button></form></div>`,
+        )
+        .join("")
+    : `<p class="empty">Nenhum produto cadastrado.</p>`;
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/produtos`,
+    title: `Produtos — ${o.nome}`,
+    description: `Produtos da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Produtos</h1><p class="sub">${o.produtos.filter((p) => p.active).length} na vitrine de ${o.produtos.length}</p>` +
+      (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `<h2>Novo produto</h2><form method="post" action="/painel/produtos"><div class="card">` +
+      `<label class="d" for="nn">Nome</label><input id="nn" name="nome" required maxlength=80 ${campo}>` +
+      `<label class="d" for="nd">Descrição</label><input id="nd" name="descricao" maxlength=160 ${campo}>` +
+      `<label class="d" for="nc">Categoria</label><input id="nc" name="categoria" value="Cabelo" maxlength=30 ${campo}>` +
+      `<label class="d" for="np">Preço (R$)</label><input id="np" name="preco" inputmode="decimal" required ${campo}>` +
+      `<label class="d" for="npd">Preço antigo (opcional)</label><input id="npd" name="preco_de" inputmode="decimal" ${campo}>` +
+      `</div><button class="cta" type="submit">Adicionar</button></form>` +
+      `<h2>Cadastrados</h2>${lista}` +
+      `<a class="ghost" href="/produtos">Ver a vitrine do cliente</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
   });
 }
 
@@ -1912,6 +1972,38 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     if (!tenant) return neutral();
     await setServiceActive(tenant.id, userId, texto("servico"), texto("ativo") === "1");
     return new Response(null, { status: 303, headers: new Headers({ location: "/painel/servicos?ok=1" }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "produtos" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const preco = valorEmCentavos(texto("preco"));
+    const precoDe = valorEmCentavos(texto("preco_de"));
+    if (preco === null || preco <= 0) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/produtos?erro=1" }) });
+    }
+    const ok = await upsertProduct({
+      tenantId: tenant.id,
+      actorId: userId,
+      productId: texto("produto") || null,
+      nome: texto("nome"),
+      descricao: texto("descricao"),
+      categoria: texto("categoria") || "produto",
+      precoCents: preco,
+      precoDeCents: precoDe !== null && precoDe > preco ? precoDe : null,
+    });
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "produtos" && path[2] === "ativo") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const ok = await setProductActive(tenant.id, userId, texto("produto"), texto("ativo") === "1");
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
   }
 
   if (path?.[0] === "painel" && path[1] === "despesas" && path.length === 2) {
@@ -2579,6 +2671,27 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
                   : busca.get("erro")
                     ? "Não foi possível lançar a despesa."
                     : undefined,
+        }),
+      );
+    }
+    if (path[0] === "painel" && path[1] === "produtos" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const produtos = await panelProducts(tenant.id, userId);
+      const busca = new URL(request.url).searchParams;
+      return html(
+        renderProdutosPainel({
+          row,
+          nome,
+          canonical,
+          papel,
+          produtos,
+          ok: busca.get("ok") === "1",
+          erro: busca.get("erro") ? "Não foi possível salvar — confira nome e preço." : undefined,
         }),
       );
     }
