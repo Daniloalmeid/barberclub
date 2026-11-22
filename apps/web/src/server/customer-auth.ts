@@ -338,8 +338,18 @@ export type PainelAgendamento = {
   metodo: string | null;
 };
 
-export async function panelAgenda(tenantId: string, from: string, to: string): Promise<PainelAgendamento[]> {
-  return rpcServer<PainelAgendamento>("panel_agenda", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+export async function panelAgenda(
+  tenantId: string,
+  from: string,
+  to: string,
+  staffId?: string | null,
+): Promise<PainelAgendamento[]> {
+  return rpcServer<PainelAgendamento>("panel_agenda", {
+    p_tenant: tenantId,
+    p_from: from,
+    p_to: to,
+    p_staff: staffId ?? null,
+  }).catch(() => []);
 }
 
 export type PainelResumo = {
@@ -687,6 +697,134 @@ export async function setServiceActive(tenantId: string, actorId: string, servic
       p_active: ativo,
     });
     return linhas[0] === ativo;
+  } catch {
+    return false;
+  }
+}
+
+
+// --- agenda operável -------------------------------------------------------------
+
+export type Bloqueio = { block_id: string; staff_id: string; starts_at: string; ends_at: string; reason: string | null };
+
+export async function panelBlocks(tenantId: string, from: string, to: string): Promise<Bloqueio[]> {
+  return rpcServer<Bloqueio>("panel_blocks", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
+}
+
+export async function bookForCustomer(o: {
+  actorId: string;
+  tenantId: string;
+  staffId: string;
+  serviceId: string;
+  startsAt: string;
+  customerId: string;
+}): Promise<string | null> {
+  try {
+    const linhas = await rpcServer<string>("book_for_customer", {
+      p_actor: o.actorId,
+      p_tenant: o.tenantId,
+      p_staff: o.staffId,
+      p_service: o.serviceId,
+      p_starts_at: o.startsAt,
+      p_customer: o.customerId,
+    });
+    return linhas[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function rescheduleAppointment(actorId: string, appointmentId: string, startsAt: string): Promise<boolean> {
+  try {
+    await rpcServer("reschedule_appointment", { p_actor: actorId, p_appointment: appointmentId, p_starts_at: startsAt });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function blockTime(o: {
+  actorId: string;
+  tenantId: string;
+  staffId: string;
+  from: string;
+  to: string;
+  reason: string;
+}): Promise<boolean> {
+  try {
+    await rpcServer("block_time", {
+      p_actor: o.actorId,
+      p_tenant: o.tenantId,
+      p_staff: o.staffId,
+      p_from: o.from,
+      p_to: o.to,
+      p_reason: o.reason,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function unblockTime(actorId: string, tenantId: string, blockId: string): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("unblock_time", { p_actor: actorId, p_tenant: tenantId, p_block: blockId });
+    return linhas[0] === true;
+  } catch {
+    return false;
+  }
+}
+
+// Cliente que liga ou aparece no balcão. Se já existe pelo telefone, reaproveita — senão
+// cria a identidade (a tabela customers exige user_id, não dá para ter cliente sem login).
+// O e-mail é derivado do telefone num domínio nosso; o cliente não precisa dele para nada.
+export type ClienteBalcao = { customerId: string; criado: boolean };
+
+export async function clienteDeBalcao(o: {
+  tenantId: string;
+  nome: string;
+  telefone: string;
+  email?: string;
+}): Promise<ClienteBalcao | null> {
+  const digitos = o.telefone.replace(/\D/g, "");
+  if (digitos.length < 10) return null;
+
+  const existente = await rpcServer<{ customer_id: string }>("find_customer", {
+    p_tenant: o.tenantId,
+    p_phone: digitos,
+  }).catch(() => []);
+  if (existente[0]?.customer_id) return { customerId: existente[0].customer_id, criado: false };
+
+  const email = (o.email ?? "").includes("@") ? String(o.email).trim() : `wa.${digitos}@clientes.workloop.com.br`;
+
+  // Reaproveita a identidade se ela já existe (marcação anterior que falhou, ou cliente
+  // de outra barbearia): criar de novo estouraria por e-mail duplicado e o telefone
+  // ficaria travado para sempre.
+  const jaExiste = await rpcServer<{ id: string }>("find_auth_user", { p_email: email }).catch(() => []);
+  let userId: string | null = jaExiste[0]?.id ?? null;
+  if (!userId) {
+    const bruto = (await createUser(email, `bc-${inviteCode()}`, o.nome, digitos).catch(() => null)) as
+      | { id?: string; user?: { id?: string } }
+      | null;
+    userId = bruto?.id ?? bruto?.user?.id ?? null;
+  }
+  if (!userId) return null;
+
+  const criado = await rpcServer<string>("ensure_customer", {
+    p_tenant: o.tenantId,
+    p_user: userId,
+    p_name: o.nome,
+    p_phone: digitos,
+    p_email: email,
+  }).catch(() => []);
+  return criado[0] ? { customerId: criado[0], criado: true } : null;
+}
+
+// Marcação falhou depois de criar a identidade: some com o cliente se ele não tem nada.
+export async function abandonarCliente(tenantId: string, customerId: string): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("drop_customer_if_unused", { p_tenant: tenantId, p_customer: customerId });
+    return linhas[0] === true;
   } catch {
     return false;
   }

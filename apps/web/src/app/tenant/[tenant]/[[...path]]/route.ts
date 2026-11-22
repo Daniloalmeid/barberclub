@@ -20,6 +20,11 @@ import {
   listMembers,
   loginStaff,
   panelAgenda,
+  abandonarCliente,
+  blockTime,
+  bookForCustomer,
+  clienteDeBalcao,
+  panelBlocks,
   panelCustomers,
   panelFinanceiro,
   panelServices,
@@ -27,12 +32,14 @@ import {
   panelRole,
   readSession,
   recordPayment,
+  rescheduleAppointment,
   revogarMembro,
   sessionHeaders,
   setAppointmentStatus,
   setDailyGoal,
   setHours,
   setServiceActive,
+  unblockTime,
   tenantBySlug,
   updateBranding,
   upsertService,
@@ -891,7 +898,12 @@ function renderPainel(o: {
     pago_cents: number;
     metodo: string | null;
   }>;
+  staff: Array<{ staff_id: string; display_name: string }>;
+  servicos: Array<{ service_id: string; name: string; duration_min: number; price_cents: number }>;
+  bloqueios: Array<{ block_id: string; staff_id: string; starts_at: string; ends_at: string; reason: string | null }>;
+  filtro: string;
   erro?: string;
+  aviso?: string;
 }): string {
   const hoje = todayIn(o.timezone);
   const numero = (v: number) => String(Number(v) || 0);
@@ -913,11 +925,13 @@ function renderPainel(o: {
     d.setUTCDate(d.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
     return d.toISOString().slice(0, 10);
   })();
+  const qs = (dia: string) => `/painel/agenda?dia=${dia}${o.filtro ? `&staff=${encodeURIComponent(o.filtro)}` : ""}`;
+  const link = (dia: string) => qs(dia);
   const semana = Array.from({ length: 7 }, (_, i) => somaDia(segundaDaSemana, i))
     .map((dia) => {
       const dow = new Date(`${dia}T12:00:00Z`).getUTCDay();
       const curto = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"][dow];
-      return `<a class="${dia === o.dia ? "on" : ""}" href="/painel?dia=${dia}">${curto}<br>${dia.slice(8, 10)}</a>`;
+      return `<a class="${dia === o.dia ? "on" : ""}" href="${link(dia)}">${curto}<br>${dia.slice(8, 10)}</a>`;
     })
     .join("");
 
@@ -928,9 +942,9 @@ function renderPainel(o: {
     `</form>` +
     `<div class="days" style="grid-template-columns:repeat(7,1fr);gap:.35rem;margin-bottom:.6rem">${semana}</div>` +
     `<div class="days" style="grid-template-columns:repeat(3,1fr);margin-bottom:.75rem">` +
-    `<a href="/painel?dia=${somaDia(o.dia, -1)}">◀ Ontem</a>` +
-    `<a class="${o.dia === hoje ? "on" : ""}" href="/painel?dia=${hoje}">Hoje</a>` +
-    `<a href="/painel?dia=${somaDia(o.dia, 1)}">Amanhã ▶</a>` +
+    `<a href="${link(somaDia(o.dia, -1))}">◀ Ontem</a>` +
+    `<a class="${o.dia === hoje ? "on" : ""}" href="${link(hoje)}">Hoje</a>` +
+    `<a href="${link(somaDia(o.dia, 1))}">Amanhã ▶</a>` +
     `</div>`;
 
   const lista = o.agenda.length
@@ -964,11 +978,78 @@ function renderPainel(o: {
             `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
             `<span class="d">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
             `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
-            `${dinheiro}${acoes}</div>`
+            `${dinheiro}${acoes}` +
+            (a.status === "confirmed" || a.status === "hold" || a.status === "pending_payment"
+              ? `<details style="margin-top:.4rem"><summary class="d" style="cursor:pointer">Remarcar</summary>` +
+                `<form method="post" action="/painel/remarcar" style="display:flex;gap:.35rem;margin-top:.35rem">` +
+                `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+                `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+                `<input type="date" name="data" value="${escapeHtml(o.dia)}" required style="flex:1;min-width:0;padding:.4rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.75rem">` +
+                `<input type="time" name="hora" required style="width:5.5rem;padding:.4rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.75rem">` +
+                `<button type="submit" class="ghost" style="margin:0;padding:.4rem .7rem;font-size:.75rem;cursor:pointer">OK</button></form></details>`
+              : "") +
+            `</div>`
           );
         })
         .join("")
     : `<p class="empty">Nenhum agendamento neste dia.</p>`;
+
+
+  const opcoesStaff = o.staff
+    .map((st) => `<option value="${escapeHtml(st.staff_id)}"${o.filtro === st.staff_id ? " selected" : ""}>${escapeHtml(st.display_name)}</option>`)
+    .join("");
+  const filtroForm =
+    `<form method="get" action="/painel/agenda" style="display:flex;gap:.5rem;margin-bottom:.6rem">` +
+    `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+    `<select name="staff" aria-label="Filtrar por profissional" style="flex:1;min-width:0;padding:.6rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+    `<option value="">Todos os profissionais</option>${opcoesStaff}</select>` +
+    `<button type="submit" class="ghost" style="margin:0;padding:.6rem .9rem;cursor:pointer;font:inherit">Filtrar</button></form>`;
+
+  const bloqueiosBloco = o.bloqueios.length
+    ? `<h2>Bloqueios do dia</h2>` +
+      o.bloqueios
+        .map((b) => {
+          const quem = o.staff.find((st) => st.staff_id === b.staff_id)?.display_name ?? "Profissional";
+          return (
+            `<div class="card"><div class="row"><span class="t">${escapeHtml(fmtTime(b.starts_at, o.timezone))}–${escapeHtml(fmtTime(b.ends_at, o.timezone))}</span>` +
+            `<span class="price">${escapeHtml(b.reason ?? "bloqueado")}</span></div>` +
+            `<span class="d">${escapeHtml(quem)}</span>` +
+            `<form method="post" action="/painel/agenda/liberar" style="margin-top:.35rem">` +
+            `<input type="hidden" name="bloqueio" value="${escapeHtml(b.block_id)}">` +
+            `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+            `<button type="submit" class="ghost" style="padding:.4rem .8rem;font-size:.76rem;cursor:pointer;margin:0">Liberar horário</button></form></div>`
+          );
+        })
+        .join("")
+    : "";
+
+  const opcoesServico = o.servicos
+    .map((sv) => `<option value="${escapeHtml(sv.service_id)}">${escapeHtml(sv.name)} — ${escapeHtml(money(sv.price_cents))}</option>`)
+    .join("");
+  const campoCurto = CAMPO.replace(".85rem", ".3rem");
+
+  const novoForm =
+    `<details class="card" style="margin-top:.75rem"><summary style="cursor:pointer;font-weight:600">+ Marcar cliente (telefone ou balcão)</summary>` +
+    `<form method="post" action="/painel/agenda/novo" style="margin-top:.6rem">` +
+    `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+    `<label class="d" for="nnome">Nome do cliente</label><input id="nnome" name="nome" required maxlength=80 ${campoCurto}>` +
+    `<label class="d" for="nfone">Telefone (WhatsApp)</label><input id="nfone" name="telefone" inputmode="tel" required placeholder="11987654321" ${campoCurto}>` +
+    `<label class="d" for="nserv">Serviço</label><select id="nserv" name="servico" required style="width:100%;margin:.3rem 0 .8rem;padding:.65rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">${opcoesServico}</select>` +
+    `<label class="d" for="nstaff">Profissional</label><select id="nstaff" name="profissional" required style="width:100%;margin:.3rem 0 .8rem;padding:.65rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">${opcoesStaff}</select>` +
+    `<label class="d" for="ndata">Data</label><input id="ndata" name="data" type="date" value="${escapeHtml(o.dia)}" required ${campoCurto}>` +
+    `<label class="d" for="nhora">Hora</label><input id="nhora" name="hora" type="time" required ${campoCurto}>` +
+    `<button type="submit" class="cta" style="margin-top:.2rem">Marcar</button></form></details>`;
+
+  const bloquearForm =
+    `<details class="card" style="margin-top:.5rem"><summary style="cursor:pointer;font-weight:600">+ Bloquear horário (almoço, folga, médico)</summary>` +
+    `<form method="post" action="/painel/agenda/bloquear" style="margin-top:.6rem">` +
+    `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+    `<label class="d" for="bstaff">Profissional</label><select id="bstaff" name="profissional" required style="width:100%;margin:.3rem 0 .8rem;padding:.65rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">${opcoesStaff}</select>` +
+    `<label class="d" for="bdata">Data</label><input id="bdata" name="data" type="date" value="${escapeHtml(o.dia)}" required ${campoCurto}>` +
+    `<label class="d" for="bde">De</label><input id="bde" name="de" type="time" value="12:00" required ${campoCurto}>` +
+    `<label class="d" for="bate">Até</label><input id="bate" name="ate" type="time" value="13:00" required ${campoCurto}>` +
+    `<label class="d" for="bmot">Motivo</label><input id="bmot" name="motivo" maxlength=60 placeholder="Almoço" ${campoCurto}>` +
+    `<button type="submit" class="cta">Bloquear</button></form></details>`;
 
   return appPage({
     row: o.row,
@@ -978,9 +1059,10 @@ function renderPainel(o: {
     description: `Agenda e caixa da ${o.nome}.`,
     shell: "painel" as const,
     body:
-      `<h1>Painel</h1><p class="sub">${escapeHtml(o.papel)} · ${escapeHtml(fmtDay(`${o.dia}T12:00:00Z`, o.timezone))}</p>` +
+      `<h1>Agenda</h1><p class="sub">${escapeHtml(o.papel)} · ${escapeHtml(fmtDay(`${o.dia}T12:00:00Z`, o.timezone))}</p>` +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
-      `${kpi}${nav}${lista}`,
+      (o.aviso ? `<p class="empty" style="border-color:var(--p)">${escapeHtml(o.aviso)}</p>` : "") +
+      `${kpi}${nav}${filtroForm}${lista}${bloqueiosBloco}${novoForm}${bloquearForm}`,
   });
 }
 
@@ -1311,6 +1393,107 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: "/painel/servicos?ok=1" }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "agenda" && path[2] === "novo") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const data = texto("data");
+    const hora = texto("hora");
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(data) ? data : todayIn(timezone);
+    const destino = `/painel/agenda?dia=${encodeURIComponent(dia)}`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data) || !/^\d{2}:\d{2}$/.test(hora)) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `${destino}&erro=1` }) });
+    }
+    const inicio = `${data}T${hora}:00${offsetEm(timezone, `${data}T12:00:00Z`)}`;
+    const cliente = await clienteDeBalcao({
+      tenantId: tenant.id,
+      nome: texto("nome"),
+      telefone: texto("telefone"),
+    });
+    if (!cliente) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `${destino}&erro=cliente` }) });
+    }
+    const criado = await bookForCustomer({
+      actorId: userId,
+      tenantId: tenant.id,
+      staffId: texto("profissional"),
+      serviceId: texto("servico"),
+      startsAt: inicio,
+      customerId: cliente.customerId,
+    });
+    // Horário ocupado não pode deixar cliente fantasma no CRM.
+    if (!criado && cliente.criado) {
+      await abandonarCliente(tenant.id, cliente.customerId);
+    }
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `${destino}${criado ? "&ok=1" : "&erro=ocupado"}` }),
+    });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "agenda" && path[2] === "bloquear") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const data = texto("data");
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(data) ? data : todayIn(timezone);
+    const destino = `/painel/agenda?dia=${encodeURIComponent(dia)}`;
+    const de = texto("de");
+    const ate = texto("ate");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data) || !/^\d{2}:\d{2}$/.test(de) || !/^\d{2}:\d{2}$/.test(ate) || de >= ate) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `${destino}&erro=1` }) });
+    }
+    const desloc = offsetEm(timezone, `${data}T12:00:00Z`);
+    const ok = await blockTime({
+      actorId: userId,
+      tenantId: tenant.id,
+      staffId: texto("profissional"),
+      from: `${data}T${de}:00${desloc}`,
+      to: `${data}T${ate}:00${desloc}`,
+      reason: texto("motivo"),
+    });
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `${destino}${ok ? "&ok=1" : "&erro=ocupado"}` }),
+    });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "agenda" && path[2] === "liberar") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
+    await unblockTime(userId, tenant.id, texto("bloqueio"));
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}&ok=1` }),
+    });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "remarcar" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const data = texto("data");
+    const hora = texto("hora");
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
+    const destino = `/painel/agenda?dia=${encodeURIComponent(dia)}`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data) || !/^\d{2}:\d{2}$/.test(hora)) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `${destino}&erro=1` }) });
+    }
+    const ok = await rescheduleAppointment(
+      userId,
+      texto("agendamento"),
+      `${data}T${hora}:00${offsetEm(timezone, `${data}T12:00:00Z`)}`,
+    );
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `${destino}${ok ? "&ok=1" : "&erro=ocupado"}` }),
+    });
+  }
+
   if (path?.[0] === "painel" && path[1] === "receber" && path.length === 2) {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) {
@@ -1545,9 +1728,40 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const diaBruto = busca.get("dia") ?? "";
       const dia = /^\d{4}-\d{2}-\d{2}$/.test(diaBruto) ? diaBruto : todayIn(timezone);
       const { from, to } = janelaDoDia(dia, timezone);
-      const [resumo, agenda] = await Promise.all([panelResumo(tenant.id, from, to), panelAgenda(tenant.id, from, to)]);
-      const erro = busca.get("erro") ? "Não foi possível mudar o status desse atendimento." : undefined;
-      return html(renderPainel({ row, nome, canonical, timezone, papel, dia, resumo, agenda, erro }));
+      const filtro = (busca.get("staff") ?? "").trim();
+      const [resumo, agenda, staffLista, servicos, bloqueios] = await Promise.all([
+        panelResumo(tenant.id, from, to),
+        panelAgenda(tenant.id, from, to, filtro || null),
+        listStaff(slug),
+        panelServices(tenant.id, userId),
+        panelBlocks(tenant.id, from, to),
+      ]);
+      const erro = busca.get("erro")
+        ? busca.get("erro") === "ocupado"
+          ? "Esse horário já está ocupado."
+          : busca.get("erro") === "cliente"
+            ? "Cliente não identificado — confira nome e telefone."
+            : "Não foi possível concluir a operação."
+        : undefined;
+      const aviso = busca.get("ok") ? "Feito." : undefined;
+      return html(
+        renderPainel({
+          row,
+          nome,
+          canonical,
+          timezone,
+          papel,
+          dia,
+          resumo,
+          agenda,
+          staff: staffLista.map((st) => ({ staff_id: st.staff_id, display_name: st.display_name })),
+          servicos: servicos.filter((sv) => sv.active).map((sv) => ({ service_id: sv.service_id, name: sv.name, duration_min: Number(sv.duration_min), price_cents: Number(sv.price_cents) })),
+          bloqueios,
+          filtro,
+          erro,
+          aviso,
+        }),
+      );
     }
     if (path[0] === "painel" && path[1] === "clientes" && path.length === 2) {
       const { accessToken, userId } = readSession(request);
