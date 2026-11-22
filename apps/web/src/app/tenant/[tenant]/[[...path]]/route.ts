@@ -27,15 +27,20 @@ import {
   cancelExpense,
   clienteDeBalcao,
   panelBlocks,
+  addStaff,
+  linkStaffUser,
   panelCommissions,
   panelCustomers,
   panelExpenses,
   panelFinanceiro,
   panelResultado,
   panelServices,
+  panelStaff,
   panelResumo,
   setCommission,
+  setStaffActive,
   panelRole,
+  usuarioPorEmail,
   debitCashback,
   readSession,
   recordPayment,
@@ -568,6 +573,7 @@ function renderEquipe(o: {
   papel: string;
   membros: Array<{ user_id: string; email: string; full_name: string | null; role: string; status: string }>;
   comissoes?: Array<{ staff_id: string; staff_name: string; commission_bps: number; atendimentos: number; base_cents: number; comissao_cents: number }>;
+  profissionais?: Array<{ staff_id: string; display_name: string; active: boolean; commission_bps: number; access_email: string | null; access_role: string | null }>;
   link?: string;
   ok?: string;
   erro?: string;
@@ -580,20 +586,51 @@ function renderEquipe(o: {
       `<a class="ghost" href="https://wa.me/?text=${encodeURIComponent(`Acesso ao painel da ${o.nome}: ${o.link}`)}" target="_blank" rel="noopener noreferrer">Mandar no WhatsApp</a></div>`
     : "";
 
-  const comissoesBloco =
-    `<h2>Comissões</h2><p class="d" style="color:var(--muted);font-size:.72rem;margin:0 0 .4rem">Percentual sobre o preço do serviço nos atendimentos concluídos do mês.</p>` +
-    (o.comissoes ?? [])
-      .map(
-        (c) =>
-          `<form method="post" action="/painel/comissao" class="card">` +
-          `<input type="hidden" name="profissional" value="${escapeHtml(c.staff_id)}">` +
-          `<div class="row"><span class="t">${escapeHtml(c.staff_name)}</span><span class="price">${escapeHtml(money(c.comissao_cents))}</span></div>` +
-          `<span class="d">${Number(c.atendimentos) || 0} atendimentos · base ${escapeHtml(money(c.base_cents))}</span>` +
-          `<label class="d" for="pc_${c.staff_id}">Comissão (%)</label>` +
-          `<input id="pc_${c.staff_id}" name="percentual" inputmode="decimal" value="${(Number(c.commission_bps) / 100).toFixed(2).replace(".", ",")}" style="width:100%;margin:.2rem 0 .4rem;padding:.5rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.85rem">` +
-          `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">Salvar percentual</button></form>`,
-      )
-      .join("");
+  // Profissionais (quem atende) e acessos (quem entra no painel) são coisas diferentes.
+  // Antes esta tela só listava logins, e o dono não encontrava os barbeiros.
+  const comissaoDe = (staffId: string) => o.comissoes?.find((c) => c.staff_id === staffId);
+  const profissionaisBloco =
+    `<h2>Profissionais</h2><p class="d" style="color:var(--muted);font-size:.72rem;margin:0 0 .4rem">Quem atende. Comissão sobre o preço do serviço nos atendimentos concluídos do mês.</p>` +
+    (o.profissionais ?? [])
+      .map((st) => {
+        const c = comissaoDe(st.staff_id);
+        const acesso = st.access_email
+          ? `${escapeHtml(st.access_email)}${st.access_role ? ` · ${escapeHtml(st.access_role)}` : ""}`
+          : "sem acesso ao painel";
+        const campos =
+          `<form method="post" action="/painel/comissao" style="margin-top:.45rem">` +
+          `<input type="hidden" name="profissional" value="${escapeHtml(st.staff_id)}">` +
+          `<label class="d" for="pc_${st.staff_id}">Comissão (%)</label>` +
+          `<input id="pc_${st.staff_id}" name="percentual" inputmode="decimal" value="${(Number(st.commission_bps) / 100).toFixed(2).replace(".", ",")}" style="width:100%;margin:.2rem 0 .4rem;padding:.5rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.85rem">` +
+          `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">Salvar percentual</button></form>` +
+          `<form method="post" action="/painel/equipe/profissional" style="margin-top:.35rem">` +
+          `<input type="hidden" name="profissional" value="${escapeHtml(st.staff_id)}">` +
+          `<input type="hidden" name="ativo" value="${st.active ? "0" : "1"}">` +
+          `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">${st.active ? "Desativar (sai da agenda)" : "Reativar na agenda"}</button></form>` +
+          (st.access_email
+            ? ""
+            : `<details style="margin-top:.35rem"><summary class="d" style="cursor:pointer">Dar acesso ao painel</summary>` +
+              `<form method="post" action="/painel/equipe/acesso" style="margin-top:.4rem">` +
+              `<input type="hidden" name="profissional" value="${escapeHtml(st.staff_id)}">` +
+              `<label class="d" for="ae_${st.staff_id}">E-mail do profissional</label>` +
+              `<input id="ae_${st.staff_id}" name="email" type="email" required style="width:100%;margin:.2rem 0 .4rem;padding:.5rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.85rem">` +
+              `<input type="hidden" name="papel" value="staff">` +
+              `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">Gerar convite</button></form></details>`);
+        return (
+          `<div class="card"><div class="row"><span class="t">${escapeHtml(st.display_name)}</span>` +
+          `<span class="price">${st.active ? "" : "inativo"}</span></div>` +
+          `<span class="d">${escapeHtml(acesso)}</span>` +
+          (c ? `<span class="d">${Number(c.atendimentos) || 0} atendimentos · base ${escapeHtml(money(c.base_cents))} · ${escapeHtml(money(c.comissao_cents))}</span>` : "") +
+          campos +
+          `</div>`
+        );
+      })
+      .join("") +
+    `<details class="card"><summary style="cursor:pointer;font-weight:600">+ Adicionar profissional</summary>` +
+    `<form method="post" action="/painel/equipe/novo" style="margin-top:.5rem">` +
+    `<label class="d" for="np2">Nome</label><input id="np2" name="nome" required maxlength=60 style="width:100%;margin:.2rem 0 .5rem;padding:.55rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+    `<label class="d" for="nc2">Comissão (%)</label><input id="nc2" name="percentual" inputmode="decimal" value="0" style="width:100%;margin:.2rem 0 .5rem;padding:.55rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit">` +
+    `<button type="submit" class="cta" style="margin:.2rem 0 0">Adicionar</button></form></details>`;
 
   const lista = o.membros.length
     ? o.membros
@@ -619,8 +656,8 @@ function renderEquipe(o: {
     shell: "painel" as const,
     body:
       `<h1>Equipe</h1><p class="sub">Quem trabalha aqui · você é ${escapeHtml(o.papel)}</p>${erro}${caixaLink}` +
-      `<h2>Quem tem acesso</h2>${lista}` +
-      comissoesBloco +
+      profissionaisBloco +
+      `<h2>Quem tem acesso ao painel</h2>${lista}` +
       `<h2>Convidar</h2><form method="post" action="/painel/equipe/convidar"><div class="card">` +
       `<label class="d" for="nome2">Nome</label><input id="nome2" name="nome" required maxlength="80" ${CAMPO}>` +
       `<label class="d" for="email3">E-mail</label><input id="email3" name="email" required type="email" maxlength="254" ${CAMPO}>` +
@@ -1737,6 +1774,51 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/despesas?${ok ? "ok=1" : "erro=1"}` }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "acesso") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const staffId = texto("profissional");
+    const email = texto("email");
+    const papel = ["owner", "manager", "staff"].includes(texto("papel")) ? texto("papel") : "staff";
+    const nome = (await panelStaff(tenant.id, userId)).find((st) => st.staff_id === staffId)?.display_name ?? "Profissional";
+    const convite = await convidarMembro({ tenantId: tenant.id, actorId: userId, email, nome, role: papel });
+    if (!convite.ok) {
+      return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?erro=${convite.reason === "email_invalido" ? "email" : "1"}` }) });
+    }
+    // Liga o profissional ao login: sem isso o convite dar acesso ao painel mas a agenda
+    // continuaria sem saber quem é.
+    const achado = await usuarioPorEmail(email);
+    if (achado) await linkStaffUser(tenant.id, userId, staffId, achado);
+    const base = canonical.replace(/\/$/, "");
+    return new Response(null, {
+      status: 303,
+      headers: new Headers({ location: `/painel/equipe?ok=acesso&link=${encodeURIComponent(`${base}/painel/convite?c=${convite.code}`)}` }),
+    });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "profissional") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const ok = await setStaffActive(tenant.id, userId, texto("profissional"), texto("ativo") === "1");
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "equipe" && path[2] === "novo") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const pct = Number(texto("percentual").replace(",", "."));
+    const ok = Number.isFinite(pct) && pct >= 0 && pct <= 100
+      ? await addStaff(tenant.id, userId, texto("nome"), Math.round(pct * 100))
+      : false;
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/equipe?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "comissao" && path.length === 2) {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
@@ -2084,8 +2166,31 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const inicioEq = `${hojeEq.slice(0, 7)}-01T00:00:00${offsetEm(timezone, `${hojeEq.slice(0, 7)}-01T12:00:00Z`)}`;
       const proxEq = new Date(`${hojeEq.slice(0, 7)}-01T12:00:00Z`);
       proxEq.setUTCMonth(proxEq.getUTCMonth() + 1);
-      const comissoes = await panelCommissions(tenant.id, inicioEq, `${proxEq.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proxEq.toISOString().slice(0, 10)}T12:00:00Z`)}`);
-      return html(renderEquipe({ row, nome, canonical, papel, membros, comissoes, ok: busca.get("ok") ?? undefined, erro }));
+      const [comissoes, profissionais] = await Promise.all([
+        panelCommissions(tenant.id, inicioEq, `${proxEq.toISOString().slice(0, 10)}T00:00:00${offsetEm(timezone, `${proxEq.toISOString().slice(0, 10)}T12:00:00Z`)}`),
+        panelStaff(tenant.id, userId),
+      ]);
+      return html(
+        renderEquipe({
+          row,
+          nome,
+          canonical,
+          papel,
+          membros,
+          comissoes,
+          profissionais: profissionais.map((st) => ({
+            staff_id: st.staff_id,
+            display_name: st.display_name,
+            active: st.active,
+            commission_bps: Number(st.commission_bps) || 0,
+            access_email: st.access_email,
+            access_role: st.access_role,
+          })),
+          link: busca.get("link") ?? undefined,
+          ok: busca.get("ok") ?? undefined,
+          erro,
+        }),
+      );
     }
     if (path[0] === "painel" && path[1] === "agenda" && path.length === 2) {
       const { accessToken, userId } = readSession(request);

@@ -964,6 +964,71 @@ export async function panelResultado(tenantId: string, from: string, to: string)
   return { ...RESULTADO_ZERO, ...(linhas[0] ?? {}) };
 }
 
+
+// --- profissionais (quem atende) ------------------------------------------------
+
+export type Profissional = {
+  staff_id: string;
+  display_name: string;
+  active: boolean;
+  commission_bps: number;
+  access_user_id: string | null;
+  access_email: string | null;
+  access_role: string | null;
+};
+
+// Resolve o id do usuário pelo e-mail (a Admin API não consulta por e-mail).
+export async function usuarioPorEmail(email: string): Promise<string | null> {
+  const linhas = await rpcServer<{ id: string }>("find_auth_user", { p_email: String(email ?? "").trim().toLowerCase() }).catch(() => []);
+  return linhas[0]?.id ?? null;
+}
+
+export async function panelStaff(tenantId: string, actorId: string): Promise<Profissional[]> {
+  return rpcServer<Profissional>("panel_staff", { p_tenant: tenantId, p_actor: actorId }).catch(() => []);
+}
+
+export async function linkStaffUser(tenantId: string, actorId: string, staffId: string, userId: string): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("link_staff_user", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_staff: staffId,
+      p_user: userId,
+    });
+    return linhas[0] === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function setStaffActive(tenantId: string, actorId: string, staffId: string, ativo: boolean): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("set_staff_active", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_staff: staffId,
+      p_active: ativo,
+    });
+    return linhas[0] === ativo;
+  } catch {
+    return false;
+  }
+}
+
+export async function addStaff(tenantId: string, actorId: string, nome: string, bps: number): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<string>("add_staff", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_name: nome,
+      p_commission_bps: Math.round(bps),
+    });
+    return Boolean(linhas[0]);
+  } catch {
+    return false;
+  }
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {
