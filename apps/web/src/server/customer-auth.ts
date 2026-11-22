@@ -1056,6 +1056,7 @@ export type ProdutoPainel = {
   price_cents: number;
   compare_price_cents: number | null;
   active: boolean;
+  image_url: string | null;
 };
 
 export async function panelProducts(tenantId: string, actorId: string): Promise<ProdutoPainel[]> {
@@ -1098,6 +1099,63 @@ export async function setProductActive(tenantId: string, actorId: string, produc
       p_active: ativo,
     });
     return linhas[0] === ativo;
+  } catch {
+    return false;
+  }
+}
+
+
+// --- foto do produto (storage) ---------------------------------------------------
+
+const EXTENSAO: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+
+// Sobe a foto com a chave secreta, no servidor. O navegador nunca vê a chave, e o bucket
+// aceita escrita só por este caminho.
+export async function subirFotoProduto(
+  tenantId: string,
+  productId: string,
+  arquivo: { bytes: ArrayBuffer; tipo: string },
+): Promise<string | null> {
+  const url = projectUrl();
+  const key = secretKey();
+  if (!url || !key) return null;
+
+  const extensao = EXTENSAO[arquivo.tipo];
+  if (!extensao) return null;
+  if (arquivo.bytes.byteLength === 0 || arquivo.bytes.byteLength > 5 * 1024 * 1024) return null;
+
+  const caminho = `${tenantId}/${productId}.${extensao}`;
+  const resposta = await fetch(`${url}/storage/v1/object/barberclub-produtos/${caminho}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": arquivo.tipo,
+      "x-upsert": "true",
+      "cache-control": "max-age=31536000",
+    },
+    body: arquivo.bytes,
+    signal: AbortSignal.timeout(20000),
+  }).catch(() => null);
+  if (!resposta?.ok) return null;
+
+  // ?v= força o navegador a buscar a versão nova quando a foto é trocada.
+  return `${url}/storage/v1/object/public/barberclub-produtos/${caminho}?v=${Date.now()}`;
+}
+
+export async function setProductImage(tenantId: string, actorId: string, productId: string, url: string | null): Promise<boolean> {
+  try {
+    await rpcServer("set_product_image", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_product: productId,
+      p_url: url,
+    });
+    return true;
   } catch {
     return false;
   }

@@ -40,6 +40,7 @@ import {
   panelResumo,
   setCommission,
   setProductActive,
+  setProductImage,
   setStaffActive,
   setStaffServices,
   panelRole,
@@ -51,6 +52,7 @@ import {
   rescheduleAppointment,
   revogarMembro,
   sessionHeaders,
+  subirFotoProduto,
   setAppointmentStatus,
   setDailyGoal,
   setHours,
@@ -1265,7 +1267,7 @@ function renderProdutosPainel(o: {
   nome: string;
   canonical: string;
   papel: string;
-  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; active: boolean }>;
+  produtos: Array<{ product_id: string; name: string; description: string | null; category: string; price_cents: number; compare_price_cents: number | null; active: boolean; image_url: string | null }>;
   ok?: boolean;
   erro?: string;
 }): string {
@@ -1278,12 +1280,24 @@ function renderProdutosPainel(o: {
             `<div class="card"><form method="post" action="/painel/produtos">` +
             `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
             `<div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${item.active ? escapeHtml(money(item.price_cents)) : "fora da vitrine"}</span></div>` +
+            (item.image_url
+              ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" style="width:100%;height:5.2rem;object-fit:cover;border-radius:.6rem;margin:.35rem 0">`
+              : `<span class="d">sem foto — o card usa as iniciais</span>`) +
             `<label class="d" for="n_${item.product_id}">Nome</label><input id="n_${item.product_id}" name="nome" value="${escapeHtml(item.name)}" required maxlength=80 ${campo}>` +
             `<label class="d" for="d_${item.product_id}">Descrição</label><input id="d_${item.product_id}" name="descricao" value="${escapeHtml(item.description ?? "")}" maxlength=160 ${campo}>` +
             `<label class="d" for="c_${item.product_id}">Categoria</label><input id="c_${item.product_id}" name="categoria" value="${escapeHtml(item.category)}" maxlength=30 ${campo}>` +
             `<label class="d" for="p_${item.product_id}">Preço (R$)</label><input id="p_${item.product_id}" name="preco" value="${reais(item.price_cents)}" inputmode="decimal" required ${campo}>` +
             `<label class="d" for="d2_${item.product_id}">Preço antigo (deixe vazio se não há)</label><input id="d2_${item.product_id}" name="preco_de" value="${reais(item.compare_price_cents)}" inputmode="decimal" ${campo}>` +
             `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.3rem 0 0">Salvar</button></form>` +
+            `<form method="post" action="/painel/produtos/foto" enctype="multipart/form-data" style="margin-top:.35rem">` +
+            `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
+            `<label class="d" for="f_${item.product_id}">Foto (jpg, png ou webp · até 5 MB)</label>` +
+            `<input id="f_${item.product_id}" name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;margin:.2rem 0 .3rem;font-size:.78rem;color:var(--muted)">` +
+            `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.76rem;cursor:pointer;margin:0">Enviar foto</button></form>` +
+            (item.image_url
+              ? `<form method="post" action="/painel/produtos/foto"><input type="hidden" name="produto" value="${escapeHtml(item.product_id)}"><input type="hidden" name="remover" value="1">` +
+                `<button type="submit" class="ghost" style="width:100%;padding:.35rem;font-size:.72rem;cursor:pointer;margin:.25rem 0 0">Remover foto</button></form>`
+              : "") +
             `<form method="post" action="/painel/produtos/ativo" style="margin-top:.3rem">` +
             `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
             `<input type="hidden" name="ativo" value="${item.active ? "0" : "1"}">` +
@@ -1997,6 +2011,34 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "produtos" && path[2] === "foto") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const produto = texto("produto");
+
+    if (texto("remover") === "1") {
+      const ok = await setProductImage(tenant.id, userId, produto, null);
+      return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
+    }
+
+    const arquivo = form.get("arquivo");
+    if (!(arquivo instanceof File) || arquivo.size === 0) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/produtos?erro=foto" }) });
+    }
+    const tipo = arquivo.type.toLowerCase();
+    if (!["image/jpeg", "image/png", "image/webp"].includes(tipo) || arquivo.size > 5 * 1024 * 1024) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/produtos?erro=foto" }) });
+    }
+    const url = await subirFotoProduto(tenant.id, produto, { bytes: await arquivo.arrayBuffer(), tipo });
+    if (!url) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/produtos?erro=foto" }) });
+    }
+    const ok = await setProductImage(tenant.id, userId, produto, url);
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=foto"}` }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "produtos" && path[2] === "ativo") {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
@@ -2691,7 +2733,12 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           papel,
           produtos,
           ok: busca.get("ok") === "1",
-          erro: busca.get("erro") ? "Não foi possível salvar — confira nome e preço." : undefined,
+          erro:
+            busca.get("erro") === "foto"
+              ? "Foto não aceita: use jpg, png ou webp de até 5 MB."
+              : busca.get("erro")
+                ? "Não foi possível salvar — confira nome e preço."
+                : undefined,
         }),
       );
     }
