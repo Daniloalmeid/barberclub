@@ -253,6 +253,45 @@ export async function entrar(o: { slug: string; email: string; password: string 
   }
 }
 
+// --- conta do cliente -----------------------------------------------------------
+
+export type MeuDados = { customerId: string | null; fullName: string | null; phone: string | null; email: string | null };
+
+export async function customerMe(tenantId: string, userId: string): Promise<MeuDados> {
+  const rows = await rpcServer<{ customer_id: string; full_name: string | null; phone: string | null; email: string | null }>(
+    "customer_me",
+    { p_tenant: tenantId, p_user: userId },
+  ).catch(() => []);
+  const row = rows[0];
+  return {
+    customerId: row?.customer_id ?? null,
+    fullName: row?.full_name ?? null,
+    phone: row?.phone ?? null,
+    email: row?.email ?? null,
+  };
+}
+
+export type MeuAgendamento = {
+  appointment_id: string;
+  starts_at: string;
+  ends_at: string;
+  status: string;
+  service_name: string | null;
+  staff_name: string | null;
+  price_cents: number | null;
+};
+
+export async function customerAppointments(tenantId: string, userId: string): Promise<MeuAgendamento[]> {
+  return rpcServer<MeuAgendamento>("customer_appointments", { p_tenant: tenantId, p_user: userId }).catch(() => []);
+}
+
+// Confirma a reserva quando o pagamento é no local: sem isso ela morre em
+// hold_minutes (10 min) e o horário do cliente volta a ficar livre.
+export async function confirmAppointment(appointmentId: string): Promise<boolean> {
+  const rows = await rpcServer<{ status: string }>("confirm_appointment", { p_appointment: appointmentId }).catch(() => []);
+  return rows[0]?.status === "confirmed";
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {

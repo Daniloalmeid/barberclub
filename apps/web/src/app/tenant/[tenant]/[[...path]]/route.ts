@@ -8,6 +8,9 @@ import {
   bookWithSession,
   cadastrar,
   clearSessionHeaders,
+  confirmAppointment,
+  customerAppointments,
+  customerMe,
   entrar,
   idempotencyKeyFor,
   readSession,
@@ -224,7 +227,7 @@ function appPage(options: {
     .join("");
   const nav = (key: "inicio" | "agendar" | "conta", label: string, icon: string, href: string) =>
     `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Entrar", "☺", "/entrar")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
 
 
@@ -452,22 +455,87 @@ function renderConfirmed(o: {
   serviceName: string;
   staffName: string;
   startsAt: string;
+  confirmado: boolean;
 }): string {
   const wa = whatsappLink(o.row.whatsapp_public, o.nome);
+  const titulo = o.confirmado ? "Horário confirmado" : "Horário reservado";
+  const aviso = o.confirmado
+    ? "Está confirmado. Não precisa fazer mais nada."
+    : "A barbearia ainda precisa confirmar. Se não confirmar, o horário volta a ficar livre em alguns minutos.";
   return appPage({
     row: o.row,
     name: o.nome,
     canonical: o.canonical,
-    title: `Reservado — ${o.nome}`,
+    title: `${titulo} — ${o.nome}`,
     description: `Seu horário na ${o.nome}.`,
-    nav: "agendar",
+    nav: "conta",
     body:
-      `<h1>Horário reservado</h1><p class="sub">${escapeHtml(fmtDay(o.startsAt, o.timezone))} às ${escapeHtml(fmtTime(o.startsAt, o.timezone))}</p>` +
+      `<h1>${titulo}</h1><p class="sub">${escapeHtml(fmtDay(o.startsAt, o.timezone))} às ${escapeHtml(fmtTime(o.startsAt, o.timezone))}</p>` +
       `<div class="card"><div class="row"><span class="t">${escapeHtml(o.serviceName)}</span></div>` +
       `<span class="d">com ${escapeHtml(o.staffName)}</span></div>` +
-      `<p class="d" style="color:var(--muted);font-size:.78rem">Guarde o código <code>${escapeHtml(o.appointmentId.slice(0, 8))}</code>. A barbearia confirma o atendimento.</p>` +
+      `<p class="d" style="color:var(--muted);font-size:.8rem">${escapeHtml(aviso)}</p>` +
+      `<p class="d" style="color:var(--muted);font-size:.78rem">Código <code>${escapeHtml(o.appointmentId.slice(0, 8))}</code> — aparece também em Minha conta.</p>` +
       (wa ? `<a class="cta" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Avisar no WhatsApp</a>` : "") +
-      `<a class="ghost" href="/">Voltar ao início</a>`,
+      `<a class="ghost" href="/conta">Ver meus agendamentos</a><a class="ghost" href="/">Voltar ao início</a>`,
+  });
+}
+
+const ROTULO_STATUS: Record<string, string> = {
+  hold: "aguardando confirmação",
+  pending_payment: "aguardando pagamento",
+  confirmed: "confirmado",
+  completed: "atendido",
+  canceled: "cancelado",
+  no_show: "não compareceu",
+  expired: "expirado",
+  payment_conflict: "pagamento em análise",
+};
+
+function renderConta(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  dados: { fullName: string | null; phone: string | null; email: string | null };
+  agendamentos: Array<{
+    appointment_id: string;
+    starts_at: string;
+    status: string;
+    service_name: string | null;
+    staff_name: string | null;
+    price_cents: number | null;
+  }>;
+  novo: boolean;
+}): string {
+  const bemVindo = o.novo
+    ? `<div class="card" style="border-color:var(--p)"><div class="t">Conta criada</div><span class="d">Você já está dentro — não precisa confirmar nada por e-mail.</span></div>`
+    : "";
+  const nome = o.dados.fullName ?? "Cliente";
+  const lista = o.agendamentos.length
+    ? o.agendamentos
+        .map(
+          (a) =>
+            `<div class="card"><div class="row"><span class="t">${escapeHtml(a.service_name ?? "Atendimento")}</span>` +
+            `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
+            `<span class="d">${escapeHtml(fmtDay(a.starts_at, o.timezone))} às ${escapeHtml(fmtTime(a.starts_at, o.timezone))}` +
+            `${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
+            `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}</span></div>`,
+        )
+        .join("")
+    : `<p class="empty">Nenhum horário marcado ainda.</p>`;
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}conta`,
+    title: `Minha conta — ${o.nome}`,
+    description: `Seus dados e seus horários na ${o.nome}.`,
+    nav: "conta",
+    body:
+      `${bemVindo}<h1>Olá, ${escapeHtml(nome.split(/\s+/)[0] ?? nome)}</h1>` +
+      `<p class="sub">${escapeHtml(o.dados.email ?? "")}${o.dados.phone ? ` · ${escapeHtml(o.dados.phone)}` : ""}</p>` +
+      `<h2>Meus horários</h2>${lista}` +
+      `<a class="cta" href="/agendar">Marcar outro horário</a>` +
+      `<a class="ghost" href="/sair">Sair da conta</a>`,
   });
 }
 
@@ -520,7 +588,8 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
 
   if (path?.[0] === "entrar" && (path.length === 1 || (path[1] === "entrar" && path.length === 2))) {
     const next = texto("next");
-    const destino = next.startsWith("/") && !next.startsWith("//") ? next : "/agendar";
+    const padrao = path[1] === "entrar" ? "/conta" : "/conta?novo=1";
+    const destino = next.startsWith("/") && !next.startsWith("//") ? next : padrao;
     const email = texto("email");
     const resultado =
       path[1] === "entrar"
@@ -600,6 +669,8 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     }
     const servicos = await listServices(slug);
     const equipe = await listStaff(slug);
+    // pagamento no local: confirma na hora, senão o horário se solta em 10 minutos
+    const confirmado = await confirmAppointment(resultado.appointmentId);
     const pagina = renderConfirmed({
       row,
       nome,
@@ -609,6 +680,7 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
       serviceName: servicos.find((item) => item.service_id === serviceId)?.name ?? "Atendimento",
       staffName: equipe.find((item) => item.staff_id === staffId)?.display_name ?? "Profissional",
       startsAt: hora,
+      confirmado,
     });
     return new Response(pagina, {
       status: 200,
@@ -638,6 +710,30 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
   if (path && path.length > 0) {
+    if (path[0] === "sair" && path.length === 1) {
+      const headers = new Headers({ location: "/" });
+      for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
+      return new Response(null, { status: 303, headers });
+    }
+    if (path[0] === "conta" && path.length === 1) {
+      const { accessToken, userId } = readSession(request);
+      const novo = new URL(request.url).searchParams.get("novo") === "1";
+      if (!accessToken || !userId) {
+        const headers = new Headers({ location: "/entrar?next=%2Fconta" });
+        return new Response(null, { status: 303, headers });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const [dados, agendamentos] = await Promise.all([
+        customerMe(tenant.id, userId),
+        customerAppointments(tenant.id, userId),
+      ]);
+      const pagina = renderConta({ row, nome, canonical, timezone, dados, agendamentos, novo });
+      return new Response(pagina, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     if (path[0] === "entrar" && path.length === 1) {
       const bruto = new URL(request.url).searchParams.get("next") ?? "/agendar";
       const next = bruto.startsWith("/") && !bruto.startsWith("//") ? bruto : "/agendar";
