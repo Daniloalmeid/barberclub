@@ -294,7 +294,9 @@ h2{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16e
 .ghost{display:block;text-align:center;text-decoration:none;border:1px solid var(--line);background:var(--surface);color:var(--txt);font-weight:500;font-size:.88rem;padding:.8rem 1rem;border-radius:.9rem;margin:.5rem 0}
 .prods{display:grid;grid-template-columns:repeat(2,1fr);gap:.7rem;margin-top:.6rem}
 .prod{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:1rem;overflow:hidden;text-decoration:none;color:inherit}
-.prod-media{position:relative;display:grid;place-items:center;height:6.4rem;background:linear-gradient(145deg,var(--p),var(--s));}
+.prod-media{position:relative;display:grid;place-items:center;height:8.6rem;padding:.55rem;background:linear-gradient(145deg,var(--p),var(--s));}
+.prod-media.tem-foto{background:var(--surface2);padding:.6rem}
+.prod-media img{max-height:100%;max-width:100%;width:auto;height:auto;object-fit:contain;border-radius:.45rem}
 .prod-ini{font-weight:800;font-size:1.15rem;letter-spacing:.06em;color:var(--on);opacity:.92}
 .prod-off{position:absolute;top:.45rem;left:.45rem;background:var(--a);color:#101012;font-size:.6rem;font-weight:800;padding:.16rem .38rem;border-radius:.4rem}
 .prod-body{display:flex;flex-direction:column;gap:.22rem;padding:.6rem .7rem .7rem;flex:1}
@@ -1224,10 +1226,10 @@ function renderProdutos(o: {
         : wa || "/";
       return (
         `<article class="prod">` +
-        `<div class="prod-media">` +
+        `<div class="prod-media${item.image_url ? " tem-foto" : ""}">` +
         (off > 0 ? `<span class="prod-off">-${off}%</span>` : "") +
         (item.image_url
-          ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" style="max-height:100%;max-width:100%;object-fit:contain">`
+          ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`
           : `<span class="prod-ini">${escapeHtml(iniciais)}</span>`) +
         `</div>` +
         `<div class="prod-body">` +
@@ -1281,7 +1283,7 @@ function renderProdutosPainel(o: {
             `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
             `<div class="row"><span class="t">${escapeHtml(item.name)}</span><span class="price">${item.active ? escapeHtml(money(item.price_cents)) : "fora da vitrine"}</span></div>` +
             (item.image_url
-              ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" style="width:100%;height:5.2rem;object-fit:cover;border-radius:.6rem;margin:.35rem 0">`
+              ? `<img src="${escapeHtml(item.image_url)}" alt="${escapeHtml(item.name)}" style="width:100%;height:7rem;object-fit:contain;background:var(--surface2);border-radius:.6rem;margin:.35rem 0">`
               : `<span class="d">sem foto — o card usa as iniciais</span>`) +
             `<label class="d" for="n_${item.product_id}">Nome</label><input id="n_${item.product_id}" name="nome" value="${escapeHtml(item.name)}" required maxlength=80 ${campo}>` +
             `<label class="d" for="d_${item.product_id}">Descrição</label><input id="d_${item.product_id}" name="descricao" value="${escapeHtml(item.description ?? "")}" maxlength=160 ${campo}>` +
