@@ -22,6 +22,7 @@ import {
   panelAgenda,
   panelCustomers,
   panelFinanceiro,
+  panelServices,
   panelResumo,
   panelRole,
   readSession,
@@ -30,7 +31,11 @@ import {
   sessionHeaders,
   setAppointmentStatus,
   setDailyGoal,
+  setHours,
+  setServiceActive,
   tenantBySlug,
+  updateBranding,
+  upsertService,
 } from "@/server/customer-auth";
 
 const NOT_FOUND_HTML =
@@ -565,6 +570,9 @@ function renderVisaoGeral(o: {
       modulo("/painel/agenda", "Agenda", "Dia a dia, escolher data, confirmar e concluir") +
       modulo("/painel/clientes", "Clientes", `Histórico, ticket médio e quem parou de voltar`, String(o.clientes)) +
       modulo("/painel/equipe", "Equipe", "Quem tem acesso ao painel e com que papel") +
+      modulo("/painel/financeiro", "Caixa", "Quanto entrou de verdade e a meta do dia") +
+      modulo("/painel/barbearia", "Minha barbearia", "Nome, contato, cores e horários") +
+      modulo("/painel/servicos", "Serviços", "Preços e duração do que você vende") +
       (o.sumidos > 0
         ? `<a class="card" href="/painel/clientes?filtro=sumidos" style="border-color:var(--p)"><div class="row"><span class="t">Clientes sumidos</span><span class="price">${o.sumidos}</span></div><span class="d">Sem voltar há 45 dias ou mais — hora de chamar</span></a>`
         : "") +
@@ -690,6 +698,107 @@ function renderFinanceiro(o: {
       `</div>` +
       `<p class="d" style="color:var(--muted);font-size:.72rem;margin-top:.6rem">Recebido é dinheiro que entrou. Serviço concluído sem pagamento registrado aparece em Pendências, para você cobrar ou lançar.</p>` +
       `<a class="ghost" href="/painel/agenda">Ir para a agenda</a>`,
+  });
+}
+
+
+// Minha barbearia: o dono muda o próprio negócio. Nome, contato, cores, horários.
+function renderBarbearia(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  papel: string;
+  ok?: boolean;
+  erro?: string;
+}): string {
+  const campo = (id: string, rotulo: string, valor: string, tipo = "text", extra = "") =>
+    `<label class="d" for="${id}">${escapeHtml(rotulo)}</label>` +
+    `<input id="${id}" name="${id}" type="${tipo}" value="${escapeHtml(valor)}" ${extra} ${CAMPO}>`;
+  const horarios = String(o.row.opening_hours ? JSON.stringify(o.row.opening_hours) : "{}");
+  const tabela = JSON.parse(horarios) as Record<string, unknown>;
+  const linhas = [["mon","Segunda"],["tue","Terça"],["wed","Quarta"],["thu","Quinta"],["fri","Sexta"],["sat","Sábado"],["sun","Domingo"]]
+    .map(([chave, label]) => {
+      const valor = typeof tabela[chave] === "string" ? String(tabela[chave]) : "";
+      return `<label class="d" for="h_${chave}">${label}</label>` +
+        `<input id="h_${chave}" name="h_${chave}" value="${escapeHtml(valor)}" placeholder="09:00-19:00 (vazio = fechado)" ${CAMPO.replace(".85rem", ".3rem")}>`;
+    })
+    .join("");
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/barbearia`,
+    title: `Minha barbearia — ${o.nome}`,
+    description: `Dados, cores e horários da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Minha barbearia</h1><p class="sub">O que você mudar aqui aparece no site na hora</p>` +
+      (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `<form method="post" action="/painel/barbearia"><h2>Identidade</h2><div class="card">` +
+      campo("nome", "Nome da barbearia", String(o.row.display_name ?? o.nome), "text", "required maxlength=80") +
+      campo("endereco", "Endereço", String(o.row.address_line ?? ""), "text", "maxlength=120") +
+      campo("cidade", "Cidade", String(o.row.city ?? ""), "text", "maxlength=60") +
+      campo("estado", "UF", String(o.row.state ?? ""), "text", "maxlength=2") +
+      campo("telefone", "Telefone", String(o.row.phone_public ?? ""), "tel", "maxlength=20") +
+      campo("whatsapp", "WhatsApp (só números, com 55)", String(o.row.whatsapp_public ?? ""), "tel", "maxlength=20") +
+      campo("instagram", "Instagram (sem @)", String(o.row.instagram_handle ?? ""), "text", "maxlength=40") +
+      campo("logo", "Logo (URL https)", String(o.row.logo_url ?? ""), "url", "maxlength=300") +
+      campo("politica", "Aviso no agendamento", String(o.row.booking_policy_text ?? ""), "text", "maxlength=200") +
+      `</div><h2>Cores</h2><div class="card">` +
+      campo("cor_primaria", "Cor principal", String(o.row.color_primary ?? "#6deaed"), "color") +
+      campo("cor_secundaria", "Cor secundária", String(o.row.color_secondary ?? "#26262b"), "color") +
+      campo("cor_acento", "Cor de apoio", String(o.row.color_accent ?? "#9ca3af"), "color") +
+      `</div><h2>Horário de funcionamento</h2><div class="card">${linhas}</div>` +
+      `<button class="cta" type="submit">Salvar</button></form>` +
+      `<a class="ghost" href="/painel">Voltar ao painel</a>`,
+  });
+}
+
+// Serviços: o que a barbearia vende, com preço e duração.
+function renderServicos(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  papel: string;
+  servicos: Array<{ service_id: string; name: string; description: string | null; duration_min: number; price_cents: number; active: boolean }>;
+  ok?: boolean;
+  erro?: string;
+}): string {
+  const reais = (cents: number) => (Number(cents) / 100).toFixed(2).replace(".", ",");
+  const lista = o.servicos
+    .map(
+      (s) =>
+        `<div class="card"><form method="post" action="/painel/servicos">` +
+        `<input type="hidden" name="servico" value="${escapeHtml(s.service_id)}">` +
+        `<div class="row"><span class="t">${escapeHtml(s.name)}</span><span class="price">${s.active ? "" : "inativo"}</span></div>` +
+        `<label class="d" for="n_${s.service_id}">Nome</label><input id="n_${s.service_id}" name="nome" value="${escapeHtml(s.name)}" required maxlength=80 ${CAMPO.replace(".85rem", ".3rem")}>` +
+        `<label class="d" for="d_${s.service_id}">Duração (min)</label><input id="d_${s.service_id}" name="duracao" value="${Number(s.duration_min)}" inputmode="numeric" required ${CAMPO.replace(".85rem", ".3rem")}>` +
+        `<label class="d" for="p_${s.service_id}">Preço (R$)</label><input id="p_${s.service_id}" name="preco" value="${reais(s.price_cents)}" inputmode="decimal" required ${CAMPO.replace(".85rem", ".3rem")}>` +
+        `<button type="submit" class="ghost" style="width:100%;margin:.5rem 0 0;padding:.5rem;cursor:pointer;font:inherit;font-size:.78rem">Salvar</button>` +
+        `</form>` +
+        `<form method="post" action="/painel/servicos/ativo"><input type="hidden" name="servico" value="${escapeHtml(s.service_id)}">` +
+        `<input type="hidden" name="ativo" value="${s.active ? "0" : "1"}">` +
+        `<button type="submit" class="ghost" style="width:100%;margin:.35rem 0 0;padding:.5rem;cursor:pointer;font:inherit;font-size:.78rem">${s.active ? "Desativar" : "Ativar"}</button></form>`,
+    )
+    .join("");
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}painel/servicos`,
+    title: `Serviços — ${o.nome}`,
+    description: `Serviços e preços da ${o.nome}.`,
+    shell: "painel" as const,
+    body:
+      `<h1>Serviços</h1><p class="sub">${o.servicos.filter((s) => s.active).length} ativos de ${o.servicos.length}</p>` +
+      (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
+      (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
+      `<h2>Novo serviço</h2><form method="post" action="/painel/servicos"><div class="card">` +
+      `<label class="d" for="nn">Nome</label><input id="nn" name="nome" required maxlength=80 ${CAMPO}>` +
+      `<label class="d" for="nd">Duração (min)</label><input id="nd" name="duracao" value="30" inputmode="numeric" required ${CAMPO}>` +
+      `<label class="d" for="np">Preço (R$)</label><input id="np" name="preco" value="40,00" inputmode="decimal" required ${CAMPO}>` +
+      `</div><button class="cta" type="submit">Adicionar</button></form>` +
+      `<h2>Existentes</h2>${lista}` +
+      `<a class="ghost" href="/painel/barbearia">Editar dados e horários</a><a class="ghost" href="/painel">Voltar ao painel</a>`,
   });
 }
 
@@ -1148,6 +1257,60 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     });
   }
 
+  if (path?.[0] === "painel" && path[1] === "barbearia" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const okMarca = await updateBranding(tenant.id, userId, {
+      nome: texto("nome"),
+      endereco: texto("endereco"),
+      cidade: texto("cidade"),
+      estado: texto("estado"),
+      telefone: texto("telefone"),
+      whatsapp: texto("whatsapp"),
+      politica: texto("politica"),
+      instagram: texto("instagram"),
+      corPrimaria: texto("cor_primaria"),
+      corSecundaria: texto("cor_secundaria"),
+      corAcento: texto("cor_acento"),
+      logo: texto("logo"),
+    });
+    const horas: Record<string, string | null> = {};
+    for (const dia of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
+      const valor = texto("h_" + dia);
+      horas[dia] = valor === "" ? null : valor;
+    }
+    const okHoras = await setHours(tenant.id, userId, horas);
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/barbearia?${okMarca && okHoras ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "servicos" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const preco = Number(texto("preco").replace(/\./g, "").replace(",", "."));
+    const duracao = Number(texto("duracao").replace(/\D/g, ""));
+    const ok = await upsertService(tenant.id, userId, {
+      id: texto("servico") || null,
+      nome: texto("nome"),
+      descricao: texto("descricao"),
+      duracao: Number.isFinite(duracao) ? duracao : 0,
+      precoCents: Number.isFinite(preco) ? Math.round(preco * 100) : -1,
+    });
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/servicos?${ok ? "ok=1" : "erro=1"}` }) });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "servicos" && path[2] === "ativo") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    await setServiceActive(tenant.id, userId, texto("servico"), texto("ativo") === "1");
+    return new Response(null, { status: 303, headers: new Headers({ location: "/painel/servicos?ok=1" }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "receber" && path.length === 2) {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) {
@@ -1448,6 +1611,31 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           erro,
         }),
       );
+    }
+    if (path[0] === "painel" && path[1] === "barbearia" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const busca = new URL(request.url).searchParams;
+      return html(renderBarbearia({ row, nome, canonical, papel, ok: busca.get("ok") === "1", erro: busca.get("erro") ? "Não foi possível salvar — confira os campos." : undefined }));
+    }
+    if (path[0] === "painel" && path[1] === "servicos" && path.length === 2) {
+      const { accessToken, userId } = readSession(request);
+      if (!accessToken || !userId) {
+        return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      }
+      const tenant = await tenantBySlug(slug);
+      if (!tenant) return neutral();
+      const papel = await panelRole(tenant.id, userId);
+      if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+      const servicos = await panelServices(tenant.id, userId);
+      const busca = new URL(request.url).searchParams;
+      return html(renderServicos({ row, nome, canonical, papel, servicos, ok: busca.get("ok") === "1", erro: busca.get("erro") ? "Não foi possível salvar — confira nome, duração e preço." : undefined }));
     }
     if (path[0] === "painel" && path.length === 1) {
       const { accessToken, userId } = readSession(request);

@@ -96,7 +96,11 @@ async function rpcServer<T>(fn: string, body: Record<string, unknown>): Promise<
     const corpo = await response.text().catch(() => "");
     throw new Error(`server_api.${fn} ${response.status} ${corpo.slice(0, 300)}`);
   }
-  const json: unknown = await response.json();
+  // Função que retorna void vem como 204 sem corpo: ler JSON aqui estourava e a tela
+  // dizia "não foi possível salvar" depois de ter salvado.
+  const texto = await response.text();
+  if (!texto) return [];
+  const json: unknown = JSON.parse(texto);
   // Função que retorna TABLE devolve array; função que retorna escalar (text, bigint)
   // devolve o valor solto. Tratar só array fazia panel_role virar null e o barbeiro
   // levar 403 mesmo sendo dono da barbearia.
@@ -583,6 +587,109 @@ export async function panelFinanceiro(
     p_to: to,
   }).catch(() => []);
   return { ...FINANCEIRO_ZERO, ...(linhas[0] ?? {}) };
+}
+
+
+// --- minha barbearia ------------------------------------------------------------
+
+export type PainelServico = {
+  service_id: string;
+  name: string;
+  description: string | null;
+  duration_min: number;
+  price_cents: number;
+  display_order: number | null;
+  active: boolean;
+};
+
+export async function panelServices(tenantId: string, actorId: string): Promise<PainelServico[]> {
+  return rpcServer<PainelServico>("panel_services", { p_tenant: tenantId, p_actor: actorId }).catch(() => []);
+}
+
+export async function updateBranding(
+  tenantId: string,
+  actorId: string,
+  dados: {
+    nome: string;
+    endereco: string;
+    cidade: string;
+    estado: string;
+    telefone: string;
+    whatsapp: string;
+    politica: string;
+    instagram: string;
+    corPrimaria: string;
+    corSecundaria: string;
+    corAcento: string;
+    logo: string;
+  },
+): Promise<boolean> {
+  try {
+    await rpcServer("update_branding", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_display_name: dados.nome,
+      p_address_line: dados.endereco,
+      p_city: dados.cidade,
+      p_state: dados.estado,
+      p_phone_public: dados.telefone,
+      p_whatsapp_public: dados.whatsapp,
+      p_policy_text: dados.politica,
+      p_instagram: dados.instagram,
+      p_color_primary: dados.corPrimaria,
+      p_color_secondary: dados.corSecundaria,
+      p_color_accent: dados.corAcento,
+      p_logo_url: dados.logo,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function setHours(tenantId: string, actorId: string, horas: Record<string, string | null>): Promise<boolean> {
+  try {
+    await rpcServer("set_hours", { p_tenant: tenantId, p_actor: actorId, p_hours: horas });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertService(
+  tenantId: string,
+  actorId: string,
+  servico: { id?: string | null; nome: string; descricao: string; duracao: number; precoCents: number },
+): Promise<boolean> {
+  try {
+    await rpcServer("upsert_service", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_service: servico.id ?? null,
+      p_name: servico.nome,
+      p_description: servico.descricao,
+      p_duration_min: servico.duracao,
+      p_price_cents: servico.precoCents,
+      p_display_order: null,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function setServiceActive(tenantId: string, actorId: string, serviceId: string, ativo: boolean): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<boolean>("set_service_active", {
+      p_tenant: tenantId,
+      p_actor: actorId,
+      p_service: serviceId,
+      p_active: ativo,
+    });
+    return linhas[0] === ativo;
+  } catch {
+    return false;
+  }
 }
 
 // --- cookies -------------------------------------------------------------------
