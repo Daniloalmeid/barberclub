@@ -221,6 +221,9 @@ function appPage(options: {
   description: string;
   body: string;
   nav?: "inicio" | "agendar" | "conta";
+  // "painel" troca a barra de baixo: quem trabalha na barbearia não deve ser levado
+  // para a área do cliente ao tocar em Início.
+  shell?: "cliente" | "painel";
   crumbs?: Crumb[];
 }): string {
   const theme = themeOf(options.row);
@@ -234,7 +237,13 @@ function appPage(options: {
     .join("");
   const nav = (key: "inicio" | "agendar" | "conta", label: string, icon: string, href: string) =>
     `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
+  const abas =
+    options.shell === "painel"
+      ? `<a class="on" href="/painel"><span class="ico">▤</span>Agenda</a>` +
+        `<a href="/"><span class="ico">⌂</span>Site</a>` +
+        `<a href="/sair"><span class="ico">⎋</span>Sair</a>`
+      : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Conta", "☺", "/conta")}`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
 
 
@@ -275,7 +284,13 @@ function renderHome(o: {
   canonical: string;
   services: Awaited<ReturnType<typeof listServices>>;
   staff: Awaited<ReturnType<typeof listStaff>>;
+  // Quem trabalha na barbearia precisa de um caminho de volta ao painel; sem isso,
+  // logado como dono, a home o trata como cliente e ele fica sem porta de entrada.
+  papel?: string | null;
 }): string {
+  const atalhoPainel = o.papel
+    ? `<a class="card" href="/painel" style="border-color:var(--p)"><div class="row"><span class="t">Painel da barbearia</span><span class="price">→</span></div><span class="d">Agenda do dia, caixa e ações — você entra como ${escapeHtml(o.papel)}</span></a>`
+    : "";
   const address = String(o.row.address_line ?? "").trim();
   const city = String(o.row.city ?? "").trim();
   const state = String(o.row.state ?? "").trim();
@@ -296,7 +311,7 @@ function renderHome(o: {
         .map((member) => `<div class="who"><div class="avatar">${escapeHtml(initials(member.display_name))}</div>${escapeHtml(member.display_name)}</div>`)
         .join("")}</div>`
     : "";
-  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
+  const body = `<h1>${escapeHtml(o.nome)}</h1>${local ? `<p class="sub">${escapeHtml(local)}</p>` : ""}${atalhoPainel}<a class="cta" href="/agendar">Agendar horário</a>${wa ? `<a class="ghost" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>` : ""}<h2>Serviços</h2>${cards}${team}${hoursApp(o.row.opening_hours)}`;
   return appPage({
     row: o.row,
     name: o.nome,
@@ -471,6 +486,7 @@ function renderPainelEntrar(o: { row: Record<string, unknown>; nome: string; can
     canonical: `${o.canonical}painel`,
     title: `Painel — ${o.nome}`,
     description: `Acesso da equipe da ${o.nome}.`,
+    shell: "painel" as const,
     body:
       `<h1>Painel</h1><p class="sub">Acesso da equipe da barbearia.</p>${erro}` +
       `<form method="post" action="/painel/entrar"><div class="card">` +
@@ -572,11 +588,11 @@ function renderPainel(o: {
     canonical: `${o.canonical}painel`,
     title: `Painel — ${o.nome}`,
     description: `Agenda e caixa da ${o.nome}.`,
+    shell: "painel" as const,
     body:
       `<h1>Painel</h1><p class="sub">${escapeHtml(o.papel)} · ${escapeHtml(fmtDay(`${o.dia}T12:00:00Z`, o.timezone))}</p>` +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
-      `${kpi}${nav}${lista}` +
-      `<a class="ghost" href="/sair">Sair</a>`,
+      `${kpi}${nav}${lista}`,
   });
 }
 
@@ -1034,7 +1050,14 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       ? `<a class="btn btn-ghost" href="tel:${escapeHtml(phone.replace(/[^\d+]/g, ""))}">Ligar — ${escapeHtml(phone)}</a>`
       : "",
   ].join("");
-  const pagina = renderHome({ row, slug, nome, timezone, canonical, services, staff: await listStaff(slug) });
+  // Quem já está logado e é da equipe vê o atalho para o painel na home.
+  const sessao = readSession(request);
+  let papel: string | null = null;
+  if (sessao.accessToken && sessao.userId) {
+    const tenant = await tenantBySlug(slug).catch(() => null);
+    if (tenant) papel = await panelRole(tenant.id, sessao.userId).catch(() => null);
+  }
+  const pagina = renderHome({ row, slug, nome, timezone, canonical, services, staff: await listStaff(slug), papel });
   return new Response(pagina, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
