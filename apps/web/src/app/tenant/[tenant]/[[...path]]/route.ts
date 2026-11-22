@@ -186,6 +186,15 @@ function contraste(a: string, b: string): number {
   return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
 }
 
+// Tira a saturação: fundo com a cor pura vira parede monocromática. Mantendo só uma
+// lembrança do matiz, o fundo acompanha a marca sem engolir as outras duas cores.
+function neutralizar(hex: string, forca: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  const cinza = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const f = Math.max(0, Math.min(1, forca));
+  return rgbToHex(r + (cinza - r) * f, g + (cinza - g) * f, b + (cinza - b) * f);
+}
+
 // Se a cor se confunde com o fundo, empurra para o lado oposto até dar leitura.
 function visivelSobre(cor: string, fundo: string, alvo = 3): string {
   let atual = cor;
@@ -224,10 +233,11 @@ function themeOf(row: Record<string, unknown>): {
   // Escuro: fundo puxado para o preto e cartões mais claros que o fundo.
   // Claro: fundo levemente tingido pela cor e cartões mais claros que o fundo — se o
   // fundo também fosse branco, cartão e página ficavam indistinguíveis.
-  const bg = escuro ? mixer(secondary, "#000000", 0.78) : mixer(secondary, "#000000", 0.07);
-  const surface = escuro ? mixer(secondary, "#000000", 0.66) : mixer(secondary, "#ffffff", 0.72);
-  const surface2 = escuro ? mixer(secondary, "#000000", 0.56) : mixer(secondary, "#ffffff", 0.5);
-  const line = mixer(secondary, escuro ? "#ffffff" : "#000000", 0.16);
+  const base = neutralizar(secondary, escuro ? 0.74 : 0.82);
+  const bg = escuro ? mixer(base, "#000000", 0.7) : mixer(base, "#ffffff", 0.42);
+  const surface = escuro ? mixer(base, "#000000", 0.56) : mixer(base, "#ffffff", 0.78);
+  const surface2 = escuro ? mixer(base, "#000000", 0.44) : mixer(base, "#ffffff", 0.58);
+  const line = escuro ? mixer(base, "#ffffff", 0.18) : mixer(base, "#000000", 0.18);
 
   return {
     primary,
@@ -254,7 +264,7 @@ function appCss(t: ReturnType<typeof themeOf>): string {
 --bg:${t.bg};--surface:${t.surface};--surface2:${t.surface2};--line:${t.line};--txt:${t.txt};--muted:${t.muted}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55;padding-bottom:5.5rem;-webkit-font-smoothing:antialiased}
 .wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
-header{position:sticky;top:0;z-index:10;background:${t.bg}f2;backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header{position:sticky;top:0;z-index:10;background:${t.bg}f2;border-bottom:2px solid var(--p);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
 .logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:cover;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
 header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
@@ -862,9 +872,15 @@ function renderBarbearia(o: {
       campo("logo", "Logo (URL https)", String(o.row.logo_url ?? ""), "url", "maxlength=300") +
       campo("politica", "Aviso no agendamento", String(o.row.booking_policy_text ?? ""), "text", "maxlength=200") +
       `</div><h2>Cores</h2><div class="card">` +
-      campo("cor_primaria", "Cor principal", String(o.row.color_primary ?? "#6deaed"), "color") +
-      campo("cor_secundaria", "Cor secundária", String(o.row.color_secondary ?? "#26262b"), "color") +
-      campo("cor_acento", "Cor de apoio", String(o.row.color_accent ?? "#9ca3af"), "color") +
+      campo("cor_primaria", "Cor principal — botões, preços e destaques", String(o.row.color_primary ?? "#6deaed"), "color") +
+      campo("cor_secundaria", "Cor de fundo — o tom da página (entra suavizado)", String(o.row.color_secondary ?? "#26262b"), "color") +
+      campo("cor_acento", "Cor de apoio — títulos de seção", String(o.row.color_accent ?? "#9ca3af"), "color") +
+      `<span class="d">Prévia com as cores salvas:</span>` +
+      `<div style="display:flex;gap:.4rem;align-items:center;margin:.4rem 0 .2rem">` +
+      `<span style="flex:1;text-align:center;padding:.55rem;border-radius:.7rem;background:${escapeHtml(String(o.row.color_primary ?? "#6deaed"))};color:#111;font-weight:700;font-size:.8rem">Agendar</span>` +
+      `<span style="flex:1;text-align:center;padding:.55rem;border-radius:.7rem;background:${escapeHtml(String(o.row.color_secondary ?? "#26262b"))};color:#fff;font-size:.8rem">Fundo</span>` +
+      `<span style="flex:1;text-align:center;padding:.55rem;border-radius:.7rem;border:1px solid var(--line);color:${escapeHtml(String(o.row.color_accent ?? "#9ca3af"))};font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;font-weight:700">Apoio</span>` +
+      `</div>` +
       `</div><h2>Horário de funcionamento</h2><div class="card">${linhas}</div>` +
       `<button class="cta" type="submit">Salvar</button></form>` +
       `<a class="ghost" href="/painel">Voltar ao painel</a>`,
