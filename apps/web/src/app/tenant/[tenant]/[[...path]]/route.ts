@@ -30,6 +30,7 @@ import {
   panelServices,
   panelResumo,
   panelRole,
+  debitCashback,
   readSession,
   recordPayment,
   rescheduleAppointment,
@@ -898,6 +899,9 @@ function renderPainel(o: {
     price_cents: number | null;
     pago_cents: number;
     metodo: string | null;
+    customer_id: string | null;
+    bbt_cents: number;
+    bbt_usado_cents: number;
   }>;
   staff: Array<{ staff_id: string; display_name: string }>;
   servicos: Array<{ service_id: string; name: string; duration_min: number; price_cents: number }>;
@@ -965,16 +969,31 @@ function renderPainel(o: {
             .join("");
           const zap = String(a.customer_phone ?? "").replace(/\D/g, "");
           const pago = Number(a.pago_cents) || 0;
-          const recebivel = (a.status === "confirmed" || a.status === "completed") && pago === 0;
+          const saldoBbt = Number(a.bbt_cents) || 0;
+          const usadoBbt = Number(a.bbt_usado_cents) || 0;
+          const recebivel =
+            (a.status === "confirmed" || a.status === "completed") &&
+            pago === 0 &&
+            !(usadoBbt > 0 && a.price_cents !== null && usadoBbt >= Number(a.price_cents));
+          // Teto do abatimento: o menor entre o saldo do cliente e o preço do serviço.
+          const tetoBbt = a.price_cents ? Math.min(saldoBbt, Number(a.price_cents)) : saldoBbt;
+          const bbtCampo = saldoBbt > 0 && recebivel
+            ? `<label class="d" for="bbt_${a.appointment_id}">Usar BBT (saldo ${escapeHtml(bbt(saldoBbt))})</label>` +
+              `<input id="bbt_${a.appointment_id}" name="bbt" inputmode="decimal" value="${(tetoBbt / 100).toFixed(2).replace(".", ",")}" style="width:100%;margin:.2rem 0 .3rem;padding:.45rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.78rem">`
+            : "";
           const dinheiro = pago > 0
-            ? `<span class="d" style="color:var(--p)">recebido ${escapeHtml(money(pago))}${a.metodo ? ` · ${escapeHtml(a.metodo)}` : ""}</span>`
+            ? `<span class="d" style="color:var(--p)">recebido ${escapeHtml(money(pago))}${a.metodo ? ` · ${escapeHtml(a.metodo)}` : ""}${usadoBbt > 0 ? ` · ${escapeHtml(bbt(usadoBbt))}` : ""}</span>`
+            : usadoBbt > 0 && a.price_cents !== null && usadoBbt >= Number(a.price_cents)
+              ? `<span class="d" style="color:var(--p)">pago com ${escapeHtml(bbt(usadoBbt))}</span>`
             : recebivel
-              ? `<form method="post" action="/painel/receber" style="display:flex;gap:.4rem;margin-top:.4rem">` +
+              ? `<form method="post" action="/painel/receber" style="margin-top:.4rem">` +
                 `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
                 `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+                bbtCampo +
+                `<div style="display:flex;gap:.4rem">` +
                 `<select name="meio" aria-label="Forma de pagamento" style="flex:1;padding:.45rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.76rem">` +
                 `<option value="pix">Pix</option><option value="dinheiro">Dinheiro</option><option value="cartao">Cartão</option><option value="outro">Outro</option></select>` +
-                `<button type="submit" class="ghost" style="margin:0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">Receber ${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</button></form>`
+                `<button type="submit" class="ghost" style="margin:0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">Receber ${a.price_cents ? escapeHtml(money(Math.max(0, Number(a.price_cents) - tetoBbt))) : ""}</button></div></form>`
               : "";
           return (
             `<div class="card"><div class="row"><span class="t">${escapeHtml(fmtTime(a.starts_at, o.timezone))} · ${escapeHtml(a.customer_name ?? "Cliente")}</span>` +
@@ -1540,10 +1559,27 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
       return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
     }
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
-    const recebido = await recordPayment(userId, texto("agendamento"), texto("meio"));
+    // BBT primeiro: se o resgate falhar (saldo, teto, repetição), o pagamento não entra
+    // pela metade — o cliente não fica com desconto sem o sistema saber.
+    const bbtReais = Number(texto("bbt").replace(/\./g, "").replace(",", "."));
+    const bbtCents = Number.isFinite(bbtReais) && bbtReais > 0 ? Math.round(bbtReais * 100) : 0;
+    if (bbtCents > 0) {
+      const tenant = await tenantBySlug(slug);
+      const okBbt = tenant ? await debitCashback(userId, tenant.id, texto("agendamento"), bbtCents, "BBT usado no atendimento") : false;
+      if (!okBbt) {
+        return new Response(null, {
+          status: 303,
+          headers: new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}&erro=bbt` }),
+        });
+      }
+    }
+    const recebido = await recordPayment(userId, texto("agendamento"), texto("meio"), undefined, bbtCents);
+    // 100% em BBT: a função devolve pagamento nulo e valor zero, e isso é sucesso.
     return new Response(null, {
       status: 303,
-      headers: new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}${recebido ? "&ok=1" : "&erro=1"}` }),
+      headers: new Headers({
+        location: `/painel/agenda?dia=${encodeURIComponent(dia)}${recebido || bbtCents > 0 ? "&ok=1" : "&erro=1"}`,
+      }),
     });
   }
 
@@ -1781,7 +1817,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           ? "Esse horário já está ocupado."
           : busca.get("erro") === "cliente"
             ? "Cliente não identificado — confira nome e telefone."
-            : "Não foi possível concluir a operação."
+            : busca.get("erro") === "bbt"
+              ? "BBT não aplicado: confira o saldo do cliente e o valor do serviço."
+              : "Não foi possível concluir a operação."
         : undefined;
       const aviso = busca.get("ok") ? "Feito." : undefined;
       const ativos = servicos.filter((sv) => sv.active);

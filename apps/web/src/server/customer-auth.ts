@@ -336,6 +336,9 @@ export type PainelAgendamento = {
   price_cents: number | null;
   pago_cents: number;
   metodo: string | null;
+  customer_id: string | null;
+  bbt_cents: number;
+  bbt_usado_cents: number;
 };
 
 export async function panelAgenda(
@@ -544,6 +547,7 @@ export async function recordPayment(
   appointmentId: string,
   method: string,
   amountCents?: number,
+  bbtCents = 0,
 ): Promise<Recebimento | null> {
   try {
     const linhas = await rpcServer<Recebimento>("record_payment", {
@@ -551,6 +555,7 @@ export async function recordPayment(
       p_appointment: appointmentId,
       p_method: method,
       p_amount_cents: typeof amountCents === "number" && amountCents > 0 ? amountCents : null,
+      p_bbt_cents: Math.max(0, Math.round(bbtCents)),
     });
     return linhas[0] ?? null;
   } catch {
@@ -828,6 +833,37 @@ export async function abandonarCliente(tenantId: string, customerId: string): Pr
   } catch {
     return false;
   }
+}
+
+
+// --- BBT saindo -----------------------------------------------------------------
+
+export async function debitCashback(
+  actorId: string,
+  tenantId: string,
+  appointmentId: string,
+  amountCents: number,
+  motivo = "",
+): Promise<boolean> {
+  try {
+    const linhas = await rpcServer<number>("debit_cashback", {
+      p_actor: actorId,
+      p_tenant: tenantId,
+      p_customer: null,
+      p_amount_cents: Math.round(amountCents),
+      p_appointment: appointmentId,
+      p_reason: motivo,
+    });
+    return Number(linhas[0]) > 0;
+  } catch {
+    return false;
+  }
+}
+
+export type LancamentoBbt = { kind: string; amount_cents: number; memo: string | null; created_at: string };
+
+export async function cashbackExtrato(tenantId: string, userId: string): Promise<LancamentoBbt[]> {
+  return rpcServer<LancamentoBbt>("customer_cashback_extrato", { p_tenant: tenantId, p_user: userId }).catch(() => []);
 }
 
 // --- cookies -------------------------------------------------------------------
