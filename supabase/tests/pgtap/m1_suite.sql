@@ -999,7 +999,7 @@ select ok(
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'public_api', 'server_api', 'private', 'ledger')
        and has_function_privilege('anon', p.oid, 'execute')
-       and p.proname not in ('get_tenant_public', 'list_services', 'list_staff', 'list_free_slots')
+       and p.proname not in ('get_tenant_public', 'list_services', 'list_staff', 'list_free_slots', 'list_products')
   ),
   'G02 anon só executa o catálogo'
 );
