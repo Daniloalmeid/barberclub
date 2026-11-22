@@ -4,6 +4,16 @@ import { canonicalUrl, classifyHost, loadConfig } from "@barberclub/core";
 import { forwardedHost } from "@/server/request-host";
 import { escapeHtml } from "@/server/html";
 import { getTenantPublic, listFreeSlots, listServices, listStaff, UpstreamError } from "@/server/tenant-public";
+import {
+  bookWithSession,
+  cadastrar,
+  clearSessionHeaders,
+  entrar,
+  idempotencyKeyFor,
+  readSession,
+  sessionHeaders,
+  tenantBySlug,
+} from "@/server/customer-auth";
 
 const NOT_FOUND_HTML =
   '<!DOCTYPE html><html lang="pt-BR"><head><meta name="robots" content="noindex"><title>Página não encontrada</title></head><body><main><p>Página não encontrada.</p></main></body></html>';
@@ -200,7 +210,7 @@ function appPage(options: {
   title: string;
   description: string;
   body: string;
-  nav: "inicio" | "agendar";
+  nav: "inicio" | "agendar" | "conta";
   crumbs?: Crumb[];
 }): string {
   const theme = themeOf(options.row);
@@ -212,9 +222,9 @@ function appPage(options: {
   const crumbs = (options.crumbs ?? [])
     .map((crumb) => `<a class="ghost" href="${escapeHtml(crumb.href)}">${escapeHtml(crumb.label)}</a>`)
     .join("");
-  const nav = (key: "inicio" | "agendar", label: string, icon: string, href: string) =>
+  const nav = (key: "inicio" | "agendar" | "conta", label: string, icon: string, href: string) =>
     `<a class="${options.nav === key ? "on" : ""}" href="${escapeHtml(href)}"><span class="ico">${icon}</span>${label}</a>`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("conta", "Entrar", "☺", "/entrar")}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
 }
 
 
@@ -347,29 +357,266 @@ async function renderBooking(o: {
   }
 
   const slots = await listFreeSlots(o.slug, service.service_id, dia);
+  const equipe = await listStaff(o.slug);
+  const primeiroNome = new Map(equipe.map((item) => [item.staff_id, item.display_name.split(/\s+/)[0] ?? item.display_name]));
   const dayLabel = fmtDay(`${dia}T12:00:00Z`, o.timezone);
 
   if (hora) {
-    const chosen = slots.find((slot) => slot.starts_at === hora);
+    const staffId = (params.get("staff") ?? "").trim();
+    const chosen = slots.find((slot) => slot.starts_at === hora && (!staffId || slot.staff_id === staffId));
     const label = chosen ? fmtTime(chosen.starts_at, o.timezone) : hora.slice(11, 16);
+    const quem = chosen ? (primeiroNome.get(chosen.staff_id) ?? "") : "";
+    const next = `/agendar?servico=${encodeURIComponent(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(hora)}&staff=${encodeURIComponent(chosen?.staff_id ?? staffId)}`;
+    const { accessToken } = readSession(o.request);
+    // Com sessão: botão que grava de verdade. Sem sessão: o mesmo botão vira entrada,
+    // porque book_appointment exige cliente identificado.
+    const acao = accessToken
+      ? `<form method="post" action="/confirmar">` +
+        `<input type="hidden" name="servico" value="${escapeHtml(service.service_id)}">` +
+        `<input type="hidden" name="staff" value="${escapeHtml(chosen?.staff_id ?? staffId)}">` +
+        `<input type="hidden" name="dia" value="${escapeHtml(dia)}">` +
+        `<input type="hidden" name="hora" value="${escapeHtml(hora)}">` +
+        `<button class="cta" type="submit">Confirmar horário</button></form>`
+      : `<a class="cta" href="/entrar?next=${encodeURIComponent(next)}">Entrar e confirmar</a>`;
     return appPage({
       ...base,
-      body: `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)} às ${escapeHtml(label)}</p><div class="card"><div class="row"><span class="t">${escapeHtml(service.name)}</span><span class="price">${escapeHtml(money(service.price_cents))}</span></div><span class="d">${Number(service.duration_min)} min</span></div><p class="empty">Para confirmar, o cliente entra com o próprio e-mail. O login do cliente é o próximo passo da Etapa 2 — <strong>este horário ainda não foi reservado</strong>.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}">Escolher outro horário</a>`,
+      body:
+        `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)} às ${escapeHtml(label)}${quem ? ` · ${escapeHtml(quem)}` : ""}</p>` +
+        `<div class="card"><div class="row"><span class="t">${escapeHtml(service.name)}</span><span class="price">${escapeHtml(money(service.price_cents))}</span></div><span class="d">${Number(service.duration_min)} min</span></div>` +
+        acao +
+        `<a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}">Escolher outro horário</a>`,
     });
   }
 
   const grid = slots.length
     ? slots
-        .map(
-          (slot) =>
-            `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(slot.starts_at)}">${escapeHtml(fmtTime(slot.starts_at, o.timezone))}</a>`,
-        )
+        .map((slot) => {
+          const quem = primeiroNome.get(slot.staff_id) ?? "";
+          return `<a href="/agendar?servico=${escapeHtml(service.service_id)}&dia=${dia}&hora=${encodeURIComponent(slot.starts_at)}&staff=${encodeURIComponent(slot.staff_id)}">${escapeHtml(fmtTime(slot.starts_at, o.timezone))}${quem ? `<br><span style="font-size:.6rem;opacity:.65">${escapeHtml(quem)}</span>` : ""}</a>`;
+        })
         .join("")
     : "";
   const body = grid
     ? `<h1>${serviceLabel}</h1><p class="sub">Passo 3 de 3 · ${escapeHtml(dayLabel)}</p><div class="slots">${grid}</div><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`
     : `<h1>${serviceLabel}</h1><p class="sub">${escapeHtml(dayLabel)}</p><p class="empty">Nenhum horário livre neste dia. Escolha outro dia.</p><a class="ghost" href="/agendar?servico=${escapeHtml(service.service_id)}">Trocar o dia</a>`;
   return appPage({ ...base, body });
+}
+
+// ---------- entrada do cliente e confirmação ----------
+// O cliente não cria senha: informa nome e WhatsApp e o servidor abre a sessão.
+// Isso basta para book_appointment, que exige auth.uid() e linha em customers.
+
+const CAMPO =
+  'style="width:100%;margin:.35rem 0 .85rem;padding:.7rem;border-radius:.7rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit"';
+
+function renderLogin(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  next: string;
+  erro?: string;
+  email?: string;
+}): string {
+  const erro = o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "";
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: `${o.canonical}entrar`,
+    title: `Entrar — ${o.nome}`,
+    description: `Crie sua conta na ${o.nome} com nome, telefone, e-mail e senha.`,
+    nav: "conta",
+    body:
+      `<h1>Entrar</h1><p class="sub">Crie sua conta para agendar e ver seus horários.</p>${erro}` +
+      `<form method="post" action="/entrar"><h2>Criar conta</h2><div class="card">` +
+      `<label class="d" for="nome">Nome</label><input id="nome" name="nome" required maxlength="80" autocomplete="name" ${CAMPO}>` +
+      `<label class="d" for="telefone">Telefone com DDD</label><input id="telefone" name="telefone" required inputmode="tel" maxlength="20" autocomplete="tel" placeholder="(11) 99999-9999" ${CAMPO}>` +
+      `<label class="d" for="email">E-mail</label><input id="email" name="email" required type="email" maxlength="254" autocomplete="email" value="${escapeHtml(o.email ?? "")}" ${CAMPO}>` +
+      `<label class="d" for="senha">Senha (mínimo 8 caracteres)</label><input id="senha" name="senha" required type="password" minlength="8" autocomplete="new-password" ${CAMPO.replace(".85rem", ".2rem")}>` +
+      `</div><input type="hidden" name="next" value="${escapeHtml(o.next)}">` +
+      `<button class="cta" type="submit">Criar conta e continuar</button></form>` +
+      `<form method="post" action="/entrar/entrar"><h2>Já tenho conta</h2><div class="card">` +
+      `<label class="d" for="email2">E-mail</label><input id="email2" name="email" required type="email" autocomplete="email" ${CAMPO}>` +
+      `<label class="d" for="senha2">Senha</label><input id="senha2" name="senha" required type="password" autocomplete="current-password" ${CAMPO.replace(".85rem", ".2rem")}>` +
+      `</div><input type="hidden" name="next" value="${escapeHtml(o.next)}">` +
+      `<button class="ghost" type="submit" style="width:100%;cursor:pointer;font:inherit">Entrar</button></form>` +
+      `<p class="d" style="text-align:center;color:var(--muted);font-size:.74rem">Seu telefone é usado só para a barbearia falar com você sobre o atendimento.</p>`,
+  });
+}
+
+function renderConfirmed(o: {
+  row: Record<string, unknown>;
+  nome: string;
+  canonical: string;
+  timezone: string;
+  appointmentId: string;
+  serviceName: string;
+  staffName: string;
+  startsAt: string;
+}): string {
+  const wa = whatsappLink(o.row.whatsapp_public, o.nome);
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: o.canonical,
+    title: `Reservado — ${o.nome}`,
+    description: `Seu horário na ${o.nome}.`,
+    nav: "agendar",
+    body:
+      `<h1>Horário reservado</h1><p class="sub">${escapeHtml(fmtDay(o.startsAt, o.timezone))} às ${escapeHtml(fmtTime(o.startsAt, o.timezone))}</p>` +
+      `<div class="card"><div class="row"><span class="t">${escapeHtml(o.serviceName)}</span></div>` +
+      `<span class="d">com ${escapeHtml(o.staffName)}</span></div>` +
+      `<p class="d" style="color:var(--muted);font-size:.78rem">Guarde o código <code>${escapeHtml(o.appointmentId.slice(0, 8))}</code>. A barbearia confirma o atendimento.</p>` +
+      (wa ? `<a class="cta" href="${escapeHtml(wa)}" target="_blank" rel="noopener noreferrer">Avisar no WhatsApp</a>` : "") +
+      `<a class="ghost" href="/">Voltar ao início</a>`,
+  });
+}
+
+function renderFalha(o: { row: Record<string, unknown>; nome: string; canonical: string; mensagem: string; voltar: string }): string {
+  return appPage({
+    row: o.row,
+    name: o.nome,
+    canonical: o.canonical,
+    title: `Não foi possível — ${o.nome}`,
+    description: `Não foi possível concluir a reserva.`,
+    nav: "agendar",
+    body: `<h1>Não deu para reservar</h1><p class="empty">${escapeHtml(o.mensagem)}</p><a class="ghost" href="${escapeHtml(o.voltar)}">Escolher outro horário</a>`,
+  });
+}
+
+function html(corpo: string, status = 200): Response {
+  return new Response(corpo, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+export async function POST(request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
+  const { path } = await context.params;
+  const cfg = loadConfig();
+  const host = classifyHost(forwardedHost(request.headers), cfg.rootDomain);
+  if (host.kind !== "tenant") return neutral();
+  const slug = host.slug;
+  if (!isSlugShape(slug) || isReservedSlug(slug)) return neutral();
+  let row;
+  try {
+    row = await getTenantPublic(slug);
+  } catch (error) {
+    if (error instanceof UpstreamError) return unavailable();
+    throw error;
+  }
+  if (!row) return neutral();
+
+  const timezone = String(row.timezone ?? "America/Sao_Paulo").trim() || "America/Sao_Paulo";
+  const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
+  const nome = String(row.display_name ?? "").trim() || slug;
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return html(renderFalha({ row, nome, canonical, mensagem: "Formulário inválido.", voltar: "/agendar" }));
+  }
+  const texto = (chave: string) => String(form.get(chave) ?? "").trim();
+
+  if (path?.[0] === "entrar" && (path.length === 1 || (path[1] === "entrar" && path.length === 2))) {
+    const next = texto("next");
+    const destino = next.startsWith("/") && !next.startsWith("//") ? next : "/agendar";
+    const email = texto("email");
+    const resultado =
+      path[1] === "entrar"
+        ? await entrar({ slug, email, password: texto("senha") })
+        : await cadastrar({ slug, name: texto("nome"), phone: texto("telefone"), email, password: texto("senha") });
+    if (!resultado.ok) {
+      const mensagens: Record<string, string> = {
+        dados_invalidos: "Confira nome, e-mail e senha (mínimo 8 caracteres).",
+        email_em_uso: "Esse e-mail já tem conta. Use a senha dele em “Já tenho conta”.",
+        senha_incorreta: "E-mail ou senha não conferem.",
+        sem_supabase: "O login está indisponível agora. Fale com a barbearia no WhatsApp.",
+        falha: "Não foi possível concluir agora. Tente de novo em instantes.",
+      };
+      const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      const pagina = renderLogin({
+        row,
+        nome,
+        canonical,
+        next: destino,
+        email,
+        erro: mensagens[resultado.reason] ?? "Não foi possível concluir agora.",
+      });
+      return new Response(pagina, { status: 400, headers });
+    }
+    const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store", location: destino });
+    for (const item of sessionHeaders(resultado.session)) headers.append("set-cookie", item);
+    return new Response(null, { status: 303, headers });
+  }
+
+  if (path?.[0] === "confirmar" && path.length === 1) {
+    const serviceId = texto("servico");
+    const staffId = texto("staff");
+    const hora = (() => {
+      const bruto = texto("hora");
+      // O valor pode chegar já codificado (%3A em vez de :) quando vem de link copiado
+      // à mão. Sem decodificar, o banco recusa o timestamp e o cliente vê "erro
+      // genérico" sem motivo.
+      try {
+        return bruto.includes("%") ? decodeURIComponent(bruto) : bruto;
+      } catch {
+        return bruto;
+      }
+    })();
+    const dia = texto("dia");
+    const voltar = `/agendar?servico=${encodeURIComponent(serviceId)}&dia=${encodeURIComponent(dia)}`;
+    const { accessToken } = readSession(request);
+    if (!accessToken) {
+      const headers = new Headers({ location: `/entrar?next=${encodeURIComponent(request.url ? new URL(request.url).pathname + new URL(request.url).search : voltar)}` });
+      return new Response(null, { status: 303, headers });
+    }
+    if (!serviceId || !staffId || !dia || !hora) {
+      return html(renderFalha({ row, nome, canonical, mensagem: "Escolha o serviço, o dia e o horário.", voltar: "/agendar" }));
+    }
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+    const resultado = await bookWithSession({
+      sessionToken: accessToken,
+      tenantId: tenant.id,
+      staffId,
+      serviceId,
+      startsAt: hora,
+      idempotencyKey: idempotencyKeyFor([tenant.id, staffId, serviceId, hora]),
+    });
+    if (!resultado.ok) {
+      if (resultado.reason === "sem_sessao") {
+        const headers = new Headers({ location: `/entrar?next=${encodeURIComponent(new URL(request.url).pathname)}` });
+        for (const item of clearSessionHeaders()) headers.append("set-cookie", item);
+        return new Response(null, { status: 303, headers });
+      }
+      const mensagem =
+        resultado.reason === "slot_taken"
+          ? "Esse horário acabou de ser pego por outra pessoa. Escolha outro."
+          : resultado.reason === "not_a_customer"
+            ? "Sua sessão não está ligada a esta barbearia. Entre de novo."
+            : "Não foi possível reservar agora. Tente de novo em instantes.";
+      return html(renderFalha({ row, nome, canonical, mensagem, voltar }));
+    }
+    const servicos = await listServices(slug);
+    const equipe = await listStaff(slug);
+    const pagina = renderConfirmed({
+      row,
+      nome,
+      canonical: `${canonical}agendar`,
+      timezone,
+      appointmentId: resultado.appointmentId,
+      serviceName: servicos.find((item) => item.service_id === serviceId)?.name ?? "Atendimento",
+      staffName: equipe.find((item) => item.staff_id === staffId)?.display_name ?? "Profissional",
+      startsAt: hora,
+    });
+    return new Response(pagina, {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+
+  return neutral();
 }
 
 export async function GET(request: Request, context: { params: Promise<{ tenant: string; path?: string[] }> }) {
@@ -391,6 +638,15 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
   if (path && path.length > 0) {
+    if (path[0] === "entrar" && path.length === 1) {
+      const bruto = new URL(request.url).searchParams.get("next") ?? "/agendar";
+      const next = bruto.startsWith("/") && !bruto.startsWith("//") ? bruto : "/agendar";
+      const pagina = renderLogin({ row, nome, canonical, next });
+      return new Response(pagina, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     if (path[0] !== "agendar" || path.length > 1) return neutral();
     const pagina = await renderBooking({ request, row, slug, nome, timezone, canonical });
     return new Response(pagina, {

@@ -1,0 +1,337 @@
+// Identificação do cliente da barbearia, sem senha e sem SMS.
+//
+// O cliente informa nome e WhatsApp. O servidor — que tem a chave secreta — cria ou
+// reaproveita o usuário em auth.users, garante a linha em public.customers e abre uma
+// sessão de verdade para ele. A partir daí book_appointment funciona, porque
+// auth.uid() existe e a linha de customer existe.
+//
+// LIMITE CONHECIDO E DECLARADO: como não há código de confirmação, quem souber o
+// telefone de outra pessoa entra como ela. O próximo degrau é o código de 6 dígitos
+// por WhatsApp (a instância Evolution já está no ar) — sem isso, isto é identificação,
+// não autenticação.
+//
+// As variáveis são lidas por concatenação de propósito: o Next inlina
+// `process.env.SUPABASE_...` no build e o valor congelado vaza para o bundle.
+
+const env = (name: string): string | undefined => process.env[name];
+
+function projectUrl(): string | null {
+  const url = env(["SUPABASE", "URL"].join("_"));
+  return url ? url.replace(/\/$/, "") : null;
+}
+
+function publishableKey(): string | undefined {
+  return env(["SUPABASE", "PUBLISHABLE", "KEY"].join("_"));
+}
+
+function secretKey(): string | undefined {
+  return env(["SUPABASE", "SECRET", "KEY"].join("_"));
+}
+
+export type Session = {
+  accessToken: string;
+  refreshToken: string;
+  userId: string;
+  expiresIn: number;
+};
+
+export type Resultado =
+  | { ok: true; session: Session; customerId: string | null }
+  | {
+      ok: false;
+      reason:
+        | "sem_supabase"
+        | "dados_invalidos"
+        | "email_em_uso"
+        | "senha_incorreta"
+        | "telefone_invalido"
+        | "falha";
+    };
+
+const COOKIE_AT = "bc_at";
+const COOKIE_RT = "bc_rt";
+const COOKIE_UID = "bc_uid";
+
+export function normalizePhone(raw: string): string | null {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  // 10 ou 11 dígitos com DDD; aceita quem digita o 55 na frente
+  const local = digits.startsWith("55") && digits.length >= 12 ? digits.slice(2) : digits;
+  if (local.length < 10 || local.length > 11) return null;
+  return local;
+}
+
+function emailOk(raw: string): boolean {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(value) && value.length <= 254;
+}
+
+// 8 caracteres é o mínimo do GoTrue. Exigir mais que isso no balcão de uma barbearia
+// só empurra o cliente para "12345678".
+function passwordOk(raw: string): boolean {
+  return String(raw ?? "").length >= 8;
+}
+
+// --- server_api: só o servidor, com a chave secreta ------------------------------
+
+async function rpcServer<T>(fn: string, body: Record<string, unknown>): Promise<T[]> {
+  const url = projectUrl();
+  const key = secretKey();
+  if (!url || !key) return [];
+  const response = await fetch(`${url}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      "content-profile": "server_api",
+      "accept-profile": "server_api",
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!response.ok) throw new Error(`server_api.${fn} ${response.status}`);
+  const rows: unknown = await response.json();
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
+type TenantRow = { id: string; display_name: string; timezone: string; status: string };
+
+export async function tenantBySlug(slug: string): Promise<TenantRow | null> {
+  const rows = await rpcServer<TenantRow>("tenant_by_slug", { p_slug: slug });
+  return rows[0] ?? null;
+}
+
+// --- auth: cria usuário, define senha efêmera, abre sessão ----------------------
+
+async function adminCall(path: string, method: string, body: unknown): Promise<{ status: number; json: unknown }> {
+  const url = projectUrl();
+  const key = secretKey();
+  if (!url || !key) return { status: 503, json: null };
+  const response = await fetch(`${url}/auth/v1/admin/${path}`, {
+    method,
+    headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  const json: unknown = await response.json().catch(() => null);
+  return { status: response.status, json };
+}
+
+// Devolve o status junto porque 422 (e-mail já cadastrado) é resposta de negócio,
+// não erro interno: quem já tem conta precisa ver "entre com sua senha", não "falhou".
+async function createUser(
+  email: string,
+  password: string,
+  fullName: string,
+  phone: string,
+): Promise<{ id: string | null; status: number }> {
+  const { status, json } = await adminCall("users", "POST", {
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { full_name: fullName, phone },
+  });
+  if (status === 200 || status === 201) {
+    const id = (json as { id?: string } | null)?.id;
+    return { id: typeof id === "string" ? id : null, status };
+  }
+  return { id: null, status };
+}
+
+async function signIn(email: string, password: string): Promise<Session | null> {
+  const url = projectUrl();
+  const key = publishableKey();
+  if (!url || !key) return null;
+  const response = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: { apikey: key, "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) return null;
+  const json = (await response.json()) as Record<string, unknown>;
+  const accessToken = typeof json.access_token === "string" ? json.access_token : null;
+  const refreshToken = typeof json.refresh_token === "string" ? json.refresh_token : null;
+  const user = json.user as { id?: string } | undefined;
+  if (!accessToken || !refreshToken || !user?.id) return null;
+  return {
+    accessToken,
+    refreshToken,
+    userId: user.id,
+    expiresIn: Number(json.expires_in ?? 3600),
+  };
+}
+
+async function garantirCliente(o: {
+  tenantId: string;
+  userId: string;
+  nome: string;
+  telefone: string | null;
+  email: string;
+}): Promise<string | null> {
+  const rows = await rpcServer<{ ensure_customer: string }>("ensure_customer", {
+    p_tenant: o.tenantId,
+    p_user: o.userId,
+    p_name: o.nome,
+    p_phone: o.telefone,
+    p_email: o.email,
+  }).catch(() => []);
+  return rows[0]?.ensure_customer ?? null;
+}
+
+// Cadastro: a senha é a que o cliente escolheu, e ele já sai daqui dentro.
+//
+// O usuário nasce confirmado (email_confirm) porque o projeto está com confirmação de
+// e-mail ligada e sem SMTP próprio: pelo /signup ele ficaria sem sessão esperando um
+// e-mail que talvez nunca chegue. A consequência, declarada: não há prova de que o
+// e-mail existe. Para exigir prova, é ligar SMTP e trocar isto por signup + link.
+export async function cadastrar(o: {
+  slug: string;
+  name: string;
+  phone: string;
+  email: string;
+  password: string;
+}): Promise<Resultado> {
+  if (!projectUrl() || !secretKey() || !publishableKey()) return { ok: false, reason: "sem_supabase" };
+  const email = String(o.email ?? "").trim().toLowerCase();
+  const nome = String(o.name ?? "").trim();
+  if (!nome || !emailOk(email) || !passwordOk(o.password)) return { ok: false, reason: "dados_invalidos" };
+  const telefone = normalizePhone(o.phone);
+
+  try {
+    const tenant = await tenantBySlug(o.slug);
+    if (!tenant) return { ok: false, reason: "falha" };
+
+    const criado = await createUser(email, o.password, nome, telefone ?? String(o.phone ?? "").trim());
+    if (!criado.id) {
+      if (criado.status === 422 || criado.status === 400) return { ok: false, reason: "email_em_uso" };
+      return { ok: false, reason: "falha" };
+    }
+
+    const session = await signIn(email, o.password);
+    if (!session) return { ok: false, reason: "falha" };
+
+    const customerId = await garantirCliente({
+      tenantId: tenant.id,
+      userId: session.userId,
+      nome,
+      telefone,
+      email,
+    });
+    return { ok: true, session, customerId };
+  } catch {
+    return { ok: false, reason: "falha" };
+  }
+}
+
+// Entrada de quem já tem conta. Não completa nome: quem manda no nome é o cadastro.
+export async function entrar(o: { slug: string; email: string; password: string }): Promise<Resultado> {
+  if (!projectUrl() || !secretKey() || !publishableKey()) return { ok: false, reason: "sem_supabase" };
+  const email = String(o.email ?? "").trim().toLowerCase();
+  if (!emailOk(email) || !passwordOk(o.password)) return { ok: false, reason: "senha_incorreta" };
+
+  try {
+    const session = await signIn(email, o.password);
+    if (!session) return { ok: false, reason: "senha_incorreta" };
+    const tenant = await tenantBySlug(o.slug);
+    if (!tenant) return { ok: false, reason: "falha" };
+    // D3: a identidade é uma só. Quem se cadastrou em outra barbearia chega aqui sem
+    // a linha de customer desta — a função garante a linha sem apagar o nome.
+    const customerId = await garantirCliente({
+      tenantId: tenant.id,
+      userId: session.userId,
+      nome: "",
+      telefone: null,
+      email,
+    });
+    return { ok: true, session, customerId };
+  } catch {
+    return { ok: false, reason: "falha" };
+  }
+}
+
+// --- cookies -------------------------------------------------------------------
+
+export function readSession(request: Request): { accessToken: string | null; userId: string | null } {
+  const header = request.headers.get("cookie") ?? "";
+  const jar = new Map<string, string>();
+  for (const part of header.split(";")) {
+    const index = part.indexOf("=");
+    if (index > 0) jar.set(part.slice(0, index).trim(), part.slice(index + 1).trim());
+  }
+  return { accessToken: jar.get(COOKIE_AT) ?? null, userId: jar.get(COOKIE_UID) ?? null };
+}
+
+function cookie(name: string, value: string, maxAge: number): string {
+  return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+export function sessionHeaders(session: Session): string[] {
+  return [
+    cookie(COOKIE_AT, session.accessToken, Math.max(60, session.expiresIn)),
+    cookie(COOKIE_RT, session.refreshToken, 60 * 60 * 24 * 30),
+    cookie(COOKIE_UID, session.userId, 60 * 60 * 24 * 30),
+  ];
+}
+
+export function clearSessionHeaders(): string[] {
+  return [cookie(COOKIE_AT, "", 0), cookie(COOKIE_RT, "", 0), cookie(COOKIE_UID, "", 0)];
+}
+
+// --- reserva -------------------------------------------------------------------
+
+export type BookingResult =
+  | { ok: true; appointmentId: string }
+  | { ok: false; reason: "sem_sessao" | "not_a_customer" | "slot_taken" | "falha"; detail?: string };
+
+// A reserva é feita com o token do CLIENTE, não com a chave secreta: assim quem
+// valida permissão é o próprio banco (auth.uid()), e o servidor não ganha poder que
+// não deveria ter.
+export async function bookWithSession(o: {
+  sessionToken: string;
+  tenantId: string;
+  staffId: string;
+  serviceId: string;
+  startsAt: string;
+  idempotencyKey: string;
+}): Promise<BookingResult> {
+  const url = projectUrl();
+  const key = publishableKey();
+  if (!url || !key) return { ok: false, reason: "falha" };
+  const response = await fetch(`${url}/rest/v1/rpc/book_appointment`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${o.sessionToken}`,
+      "content-type": "application/json",
+      "content-profile": "public_api",
+      "accept-profile": "public_api",
+    },
+    body: JSON.stringify({
+      p_tenant: o.tenantId,
+      p_staff: o.staffId,
+      p_service: o.serviceId,
+      p_starts_at: o.startsAt,
+      p_idempotency_key: o.idempotencyKey,
+    }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  const texto = await response.text();
+  if (response.ok) {
+    const id = texto.replace(/^"|"$/g, "").trim();
+    return id ? { ok: true, appointmentId: id } : { ok: false, reason: "falha" };
+  }
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, reason: /not_a_customer/.test(texto) ? "not_a_customer" : "sem_sessao", detail: texto.slice(0, 120) };
+  }
+  if (/slot_unavailable|23P01|conflict|23505|exclusion/.test(texto)) return { ok: false, reason: "slot_taken" };
+  return { ok: false, reason: "falha", detail: texto.slice(0, 160) };
+}
+
+export function idempotencyKeyFor(parts: string[]): string {
+  return parts.join("|").toLowerCase().replace(/\s+/g, "");
+}
