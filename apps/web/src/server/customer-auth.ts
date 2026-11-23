@@ -1184,9 +1184,26 @@ export async function subirLogo(
 
   const extensao = EXTENSAO[arquivo.tipo];
   if (!extensao) return null;
-  if (arquivo.bytes.byteLength === 0 || arquivo.bytes.byteLength > 2 * 1024 * 1024) return null;
+  // Folga de 10 MB: o redutor do navegador entrega ~150 KB, este limite só vale para
+  // quando o redutor não rodar (navegador antigo).
+  if (arquivo.bytes.byteLength === 0 || arquivo.bytes.byteLength > 10 * 1024 * 1024) return null;
 
   const caminho = `logos/${tenantId}.${extensao}`;
+
+  // Logo antigo em outra extensão (png -> jpg, por exemplo) viraria lixo permanente:
+  // o nome fixo só protege quando a extensão não muda.
+  const outras = Object.values(EXTENSAO)
+    .filter((ext) => ext !== extensao)
+    .map((ext) => `logos/${tenantId}.${ext}`);
+  if (outras.length > 0) {
+    await fetch(`${url}/storage/v1/object/barberclub-produtos`, {
+      method: "DELETE",
+      headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ prefixes: outras }),
+      signal: AbortSignal.timeout(10000),
+    }).catch(() => null);
+  }
+
   const resposta = await fetch(`${url}/storage/v1/object/barberclub-produtos/${caminho}`, {
     method: "POST",
     headers: {

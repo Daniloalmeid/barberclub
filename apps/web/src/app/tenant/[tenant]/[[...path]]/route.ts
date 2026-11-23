@@ -279,7 +279,7 @@ function appCss(t: ReturnType<typeof themeOf>): string {
 .wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
 header{position:sticky;top:0;z-index:10;background:${t.bg}f2;border-bottom:2px solid var(--p);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
-.logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:cover;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
+.logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:contain;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
 header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
 header .city{font-size:.72rem;color:var(--muted)}
 main{padding:1.1rem 0 2rem}
@@ -358,6 +358,42 @@ function fmtDay(iso: string, timezone: string): string {
   }
 }
 
+
+// Reduz a foto no proprio celular antes de enviar. Foto de celular tem 3-6 MB, e o
+// servidor recusava por tamanho — o dono via "nao foi possivel salvar" e nao entendia.
+// Aqui o canvas reencoda em JPEG de no maximo 1200px: sobe ~150 KB, abre rapido no 4G.
+// Se o navegador nao souber decodificar (formato estranho), o envio segue pelo caminho
+// normal e a validacao do servidor decide.
+const REDUTOR = `
+for (const f of document.querySelectorAll("form[data-redimensionar]")) {
+  f.addEventListener("submit", async (evento) => {
+    const campo = f.querySelector('input[type="file"]');
+    if (!campo || !campo.files || !campo.files[0]) return;
+    evento.preventDefault();
+    const botao = f.querySelector("button");
+    if (botao) { botao.disabled = true; botao.textContent = "Enviando..."; }
+    const arquivo = campo.files[0];
+    try {
+      const limite = Number(f.dataset.redimensionar) || 1200;
+      const bitmap = await createImageBitmap(arquivo);
+      const escala = Math.min(1, limite / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * escala));
+      canvas.height = Math.max(1, Math.round(bitmap.height * escala));
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.86));
+      if (!blob) throw new Error("sem blob");
+      const dados = new FormData(f);
+      dados.set(campo.name, new File([blob], "foto.jpg", { type: "image/jpeg" }), "foto.jpg");
+      const resposta = await fetch(f.action, { method: "POST", body: dados, redirect: "follow" });
+      window.location.href = resposta.url || f.action;
+    } catch (erro) {
+      f.submit();
+    }
+  });
+}
+`;
+
 type Crumb = { label: string; href: string };
 
 function appPage(options: {
@@ -372,6 +408,9 @@ function appPage(options: {
   // para a área do cliente ao tocar em Início.
   shell?: "cliente" | "painel";
   crumbs?: Crumb[];
+  // Script inline exige o nonce da CSP (script-src 'self' 'nonce-...'). Sem ele o
+  // navegador bloqueia e o upload grande volta a falhar em silêncio.
+  script?: string;
 }): string {
   const theme = themeOf(options.row);
   const city = String(options.row.city ?? "").trim();
@@ -392,7 +431,7 @@ function appPage(options: {
         `<a href="/painel/equipe"><span class="ico">☰</span>Equipe</a>` +
         `<a href="/painel/financeiro"><span class="ico">$</span>Caixa</a>`
       : `${nav("inicio", "Início", "⌂", "/")}${nav("agendar", "Agendar", "◷", "/agendar")}${nav("produtos", "Produtos", "🛍", "/produtos")}${nav("conta", "Conta", "☺", "/conta")}`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer></body></html>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(theme.primary)}"><title>${escapeHtml(options.title)}</title><meta name="description" content="${escapeHtml(options.description)}"><link rel="canonical" href="${escapeHtml(options.canonical)}"><style>${appCss(theme)}</style></head><body><header><div class="wrap">${logoHtml}<span><span class="name">${escapeHtml(options.name)}</span>${city ? `<br><span class="city">${escapeHtml(city)}</span>` : ""}</span></div></header><main><div class="wrap">${options.body}</div></main><nav class="tabs">${abas}</nav><footer><div class="wrap">Feito com <a href="https://barber.workloop.com.br">BarberClub</a></div></footer>${options.script ?? ""}</body></html>`;
 }
 
 
@@ -1012,6 +1051,7 @@ function renderBarbearia(o: {
   nome: string;
   canonical: string;
   papel: string;
+  nonce?: string;
   ok?: boolean;
   erro?: string;
 }): string {
@@ -1033,6 +1073,7 @@ function renderBarbearia(o: {
     })
     .join("");
   return appPage({
+    script: o.nonce ? `<script nonce="${escapeHtml(o.nonce)}">${REDUTOR}</script>` : "",
     row: o.row,
     name: o.nome,
     canonical: `${o.canonical}painel/barbearia`,
@@ -1060,7 +1101,7 @@ function renderBarbearia(o: {
           `</div></div>`
         : "") +
       `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo da barbearia (quadrado, até 2 MB)</span>` +
-      `<form method="post" action="/painel/logo" enctype="multipart/form-data" style="margin-top:.4rem">` +
+      `<form method="post" action="/painel/logo" enctype="multipart/form-data" data-redimensionar="512" style="margin-top:.4rem">` +
       `<input name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;font-size:.78rem;color:var(--muted)">` +
       `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.35rem 0 0">Enviar logo</button></form>` +
       `<span class="d" style="display:block;margin-top:.35rem">Aparece no topo do site do cliente. Sem logo, fica as iniciais.</span></div>` +
@@ -1277,6 +1318,7 @@ function renderProdutosPainel(o: {
   canonical: string;
   papel: string;
   produtos: Array<{ product_id: string; name: string; description: string | null; details: string | null; category: string; brand: string | null; size_label: string | null; price_cents: number; compare_price_cents: number | null; active: boolean; image_url: string | null }>;
+  nonce?: string;
   ok?: boolean;
   erro?: string;
 }): string {
@@ -1301,7 +1343,7 @@ function renderProdutosPainel(o: {
             `<label class="d" for="t_${item.product_id}">Tamanho / volume</label><input id="t_${item.product_id}" name="tamanho" value="${escapeHtml(item.size_label ?? "")}" maxlength=30 ${campo}>` +
             `<label class="d" for="det_${item.product_id}">Descrição completa</label><textarea id="det_${item.product_id}" name="detalhes" rows="4" maxlength=1200 ${campo}>${escapeHtml(item.details ?? "")}</textarea>` +
             `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.3rem 0 0">Salvar</button></form>` +
-            `<form method="post" action="/painel/produtos/foto" enctype="multipart/form-data" style="margin-top:.35rem">` +
+            `<form method="post" action="/painel/produtos/foto" enctype="multipart/form-data" data-redimensionar="1200" style="margin-top:.35rem">` +
             `<input type="hidden" name="produto" value="${escapeHtml(item.product_id)}">` +
             `<label class="d" for="f_${item.product_id}">Foto (jpg, png ou webp · até 5 MB)</label>` +
             `<input id="f_${item.product_id}" name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;margin:.2rem 0 .3rem;font-size:.78rem;color:var(--muted)">` +
@@ -1318,6 +1360,7 @@ function renderProdutosPainel(o: {
         .join("")
     : `<p class="empty">Nenhum produto cadastrado.</p>`;
   return appPage({
+    script: o.nonce ? `<script nonce="${escapeHtml(o.nonce)}">${REDUTOR}</script>` : "",
     row: o.row,
     name: o.nome,
     canonical: `${o.canonical}painel/produtos`,
@@ -2119,7 +2162,7 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
       return new Response(null, { status: 303, headers: new Headers({ location: "/painel/barbearia?erro=logo" }) });
     }
     const tipo = arquivo.type.toLowerCase();
-    if (!["image/jpeg", "image/png", "image/webp"].includes(tipo) || arquivo.size > 2 * 1024 * 1024) {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(tipo) || arquivo.size > 10 * 1024 * 1024) {
       return new Response(null, { status: 303, headers: new Headers({ location: "/painel/barbearia?erro=logo" }) });
     }
     const url = await subirLogo(tenant.id, { bytes: await arquivo.arrayBuffer(), tipo });
@@ -2582,6 +2625,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
   const timezone = String(row.timezone ?? "America/Sao_Paulo").trim() || "America/Sao_Paulo";
   const canonical = canonicalUrl({ kind: "tenant", slug }, "/", cfg);
   const nome = String(row.display_name ?? "").trim() || slug;
+  // O middleware gera o nonce e o coloca no header da REQUISICAO; o navegador so aceita
+  // script inline marcado com ele.
+  const nonce = request.headers.get("x-nonce") ?? "";
   if (path && path.length > 0) {
     if (path[0] === "produtos" && path.length === 2 && path[1]) {
       const alvo = decodeURIComponent(String(path[1]));
@@ -2787,7 +2833,13 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const papel = await panelRole(tenant.id, userId);
       if (!papel) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
       const busca = new URL(request.url).searchParams;
-      return html(renderBarbearia({ row, nome, canonical, papel, ok: busca.get("ok") === "1", erro: busca.get("erro") ? "Não foi possível salvar — confira os campos." : undefined }));
+      const erroBarbearia =
+        busca.get("erro") === "logo"
+          ? "Logo não aceito: use jpg, png ou webp (até 10 MB)."
+          : busca.get("erro")
+            ? "Não foi possível salvar — confira os campos."
+            : undefined;
+      return html(renderBarbearia({ row, nome, canonical, papel, nonce, ok: busca.get("ok") === "1", erro: erroBarbearia }));
     }
     if (path[0] === "painel" && path[1] === "servicos" && path.length === 2) {
       const { accessToken, userId } = readSession(request);
