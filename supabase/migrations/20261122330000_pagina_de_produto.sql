@@ -17,6 +17,10 @@ as $$
   ));
 $$;
 
+-- 1b. Função nasce executável por PUBLIC no Postgres. Slugify não é API pública:
+--     o teste G02 do pgTAP barra qualquer função fora da lista branca, e com razão.
+revoke all on function public.slugify_texto(text) from public, anon, authenticated, backup_reader;
+
 -- 2. Campos novos: descrição completa, marca e tamanho.
 alter table public.products add column if not exists slug text;
 alter table public.products add column if not exists details text;
