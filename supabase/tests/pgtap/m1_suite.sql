@@ -999,7 +999,10 @@ select ok(
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'public_api', 'server_api', 'private', 'ledger')
        and has_function_privilege('anon', p.oid, 'execute')
-       and p.proname not in ('get_tenant_public', 'list_services', 'list_staff', 'list_free_slots', 'list_products')
+       -- Função pública nova entra aqui. É revisão obrigatória: o que o anon pode
+       -- executar é decisão de segurança, não efeito colateral de migration.
+       and p.proname not in ('get_tenant_public', 'list_services', 'list_staff',
+                             'list_free_slots', 'list_products', 'get_product')
   ),
   'G02 anon só executa o catálogo'
 );
