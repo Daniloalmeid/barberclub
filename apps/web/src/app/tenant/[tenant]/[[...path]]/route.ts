@@ -278,10 +278,10 @@ function appCss(t: ReturnType<typeof themeOf>): string {
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55;padding-bottom:5.5rem;-webkit-font-smoothing:antialiased}
 .wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
 header{position:sticky;top:0;z-index:10;background:${t.bg}f2;border-bottom:2px solid var(--p);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
-.logo{width:2.625rem;height:2.625rem;border-radius:.7rem;object-fit:contain;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.95rem;border:1px solid var(--line)}
-header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
-header .city{font-size:.72rem;color:var(--muted)}
+header .wrap{display:flex;align-items:center;gap:.75rem;padding:.8rem 1rem}
+.logo{width:3rem;height:3rem;border-radius:.8rem;object-fit:contain;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.05rem;border:1px solid var(--line)}
+header .name{font-weight:650;letter-spacing:-.01em;font-size:1.05rem}
+header .city{font-size:.78rem;color:var(--muted)}
 main{padding:1.1rem 0 2rem}
 h1{font-size:1.55rem;font-weight:700;letter-spacing:-.025em;margin:0 0 .25rem}
 .sub{color:var(--muted);font-size:.88rem;margin:0}
