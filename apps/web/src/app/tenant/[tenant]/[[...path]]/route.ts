@@ -41,6 +41,7 @@ import {
   setCommission,
   setProductActive,
   setProductImage,
+  setTenantLogo,
   setStaffActive,
   setStaffServices,
   panelRole,
@@ -53,6 +54,7 @@ import {
   revogarMembro,
   sessionHeaders,
   subirFotoProduto,
+  subirLogo,
   setAppointmentStatus,
   setDailyGoal,
   setHours,
@@ -1051,7 +1053,18 @@ function renderBarbearia(o: {
       campo("telefone", "Telefone", String(o.row.phone_public ?? ""), "tel", "maxlength=20") +
       campo("whatsapp", "WhatsApp (só números, com 55)", String(o.row.whatsapp_public ?? ""), "tel", "maxlength=20") +
       campo("instagram", "Instagram (sem @)", String(o.row.instagram_handle ?? ""), "text", "maxlength=40") +
-      campo("logo", "Logo (URL https)", String(o.row.logo_url ?? ""), "url", "maxlength=300") +
+      (String(o.row.logo_url ?? "").startsWith("https://")
+        ? `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo atual</span><div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">` +
+          `<img src="${escapeHtml(String(o.row.logo_url))}" alt="" style="width:2.6rem;height:2.6rem;border-radius:.6rem;object-fit:cover;background:var(--surface2)">` +
+          `<form method="post" action="/painel/logo"><input type="hidden" name="remover" value="1"><button type="submit" class="ghost" style="padding:.3rem .6rem;font-size:.72rem;cursor:pointer">Remover logo</button></form>` +
+          `</div></div>`
+        : "") +
+      `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo da barbearia (quadrado, até 2 MB)</span>` +
+      `<form method="post" action="/painel/logo" enctype="multipart/form-data" style="margin-top:.4rem">` +
+      `<input name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;font-size:.78rem;color:var(--muted)">` +
+      `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.35rem 0 0">Enviar logo</button></form>` +
+      `<span class="d" style="display:block;margin-top:.35rem">Aparece no topo do site do cliente. Sem logo, fica as iniciais.</span></div>` +
+      campo("logo", "Ou cole um link (https)", String(o.row.logo_url ?? ""), "url", "maxlength=300") +
       campo("politica", "Aviso no agendamento", String(o.row.booking_policy_text ?? ""), "text", "maxlength=200") +
       `</div><h2>Cores</h2><div class="card">` +
       campo("cor_primaria", "Cor principal — botões, preços e destaques", String(o.row.color_primary ?? "#6deaed"), "color") +
@@ -2090,6 +2103,33 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     return new Response(null, { status: 303, headers: new Headers({ location: `/painel/produtos?${ok ? "ok=1" : "erro=1"}` }) });
   }
 
+  if (path?.[0] === "painel" && path[1] === "logo") {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    const tenant = await tenantBySlug(slug);
+    if (!tenant) return neutral();
+
+    if (texto("remover") === "1") {
+      const ok = await setTenantLogo(tenant.id, userId, null);
+      return new Response(null, { status: 303, headers: new Headers({ location: `/painel/barbearia?${ok ? "ok=1" : "erro=1"}` }) });
+    }
+
+    const arquivo = form.get("arquivo");
+    if (!(arquivo instanceof File) || arquivo.size === 0) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/barbearia?erro=logo" }) });
+    }
+    const tipo = arquivo.type.toLowerCase();
+    if (!["image/jpeg", "image/png", "image/webp"].includes(tipo) || arquivo.size > 2 * 1024 * 1024) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/barbearia?erro=logo" }) });
+    }
+    const url = await subirLogo(tenant.id, { bytes: await arquivo.arrayBuffer(), tipo });
+    if (!url) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/barbearia?erro=logo" }) });
+    }
+    const ok = await setTenantLogo(tenant.id, userId, url);
+    return new Response(null, { status: 303, headers: new Headers({ location: `/painel/barbearia?${ok ? "ok=1" : "erro=logo"}` }) });
+  }
+
   if (path?.[0] === "painel" && path[1] === "produtos" && path[2] === "foto") {
     const { accessToken, userId } = readSession(request);
     if (!accessToken || !userId) return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
@@ -2824,7 +2864,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           produtos,
           ok: busca.get("ok") === "1",
           erro:
-            busca.get("erro") === "foto"
+            busca.get("erro") === "logo"
+              ? "Logo não aceito: use jpg, png ou webp de até 2 MB."
+              : busca.get("erro") === "foto"
               ? "Foto não aceita: use jpg, png ou webp de até 5 MB."
               : busca.get("erro")
                 ? "Não foi possível salvar — confira nome e preço."

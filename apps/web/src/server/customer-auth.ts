@@ -1171,6 +1171,48 @@ export async function setProductImage(tenantId: string, actorId: string, product
   }
 }
 
+
+// Logo: mesmo bucket das fotos, prefixo proprio. Nome fixo por barbearia — trocar o logo
+// nao acumula arquivo velho, e o ?v= resolve o cache do navegador.
+export async function subirLogo(
+  tenantId: string,
+  arquivo: { bytes: ArrayBuffer; tipo: string },
+): Promise<string | null> {
+  const url = projectUrl();
+  const key = secretKey();
+  if (!url || !key) return null;
+
+  const extensao = EXTENSAO[arquivo.tipo];
+  if (!extensao) return null;
+  if (arquivo.bytes.byteLength === 0 || arquivo.bytes.byteLength > 2 * 1024 * 1024) return null;
+
+  const caminho = `logos/${tenantId}.${extensao}`;
+  const resposta = await fetch(`${url}/storage/v1/object/barberclub-produtos/${caminho}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": arquivo.tipo,
+      "x-upsert": "true",
+      "cache-control": "max-age=3600",
+    },
+    body: arquivo.bytes,
+    signal: AbortSignal.timeout(20000),
+  }).catch(() => null);
+  if (!resposta?.ok) return null;
+
+  return `${url}/storage/v1/object/public/barberclub-produtos/${caminho}?v=${Date.now()}`;
+}
+
+export async function setTenantLogo(tenantId: string, actorId: string, url: string | null): Promise<boolean> {
+  try {
+    await rpcServer("set_tenant_logo", { p_tenant: tenantId, p_actor: actorId, p_url: url });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // --- cookies -------------------------------------------------------------------
 
 export function readSession(request: Request): { accessToken: string | null; userId: string | null } {
