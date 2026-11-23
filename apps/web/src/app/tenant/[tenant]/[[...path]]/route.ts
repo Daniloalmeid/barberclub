@@ -1072,6 +1072,18 @@ function renderBarbearia(o: {
         `<input id="h_${chave}" name="h_${chave}" value="${escapeHtml(valor)}" placeholder="09:00-19:00 (vazio = fechado)" ${CAMPO.replace(".85rem", ".3rem")}>`;
     })
     .join("");
+  const blocoLogo =
+    (String(o.row.logo_url ?? "").startsWith("https://")
+        ? `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo atual</span><div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">` +
+          `<img src="${escapeHtml(String(o.row.logo_url))}" alt="" style="width:2.6rem;height:2.6rem;border-radius:.6rem;object-fit:contain;background:var(--surface2)">` +
+          `<form method="post" action="/painel/logo"><input type="hidden" name="remover" value="1"><button type="submit" class="ghost" style="padding:.3rem .6rem;font-size:.72rem;cursor:pointer">Remover logo</button></form>` +
+          `</div></div>`
+        : "") +
+      `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo da barbearia (quadrado, até 2 MB)</span>` +
+      `<form method="post" action="/painel/logo" enctype="multipart/form-data" data-redimensionar="512" style="margin-top:.4rem">` +
+      `<input name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;font-size:.78rem;color:var(--muted)">` +
+      `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.35rem 0 0">Enviar logo</button></form>` +
+      `<span class="d" style="display:block;margin-top:.35rem">Aparece no topo do site do cliente. Sem logo, fica as iniciais.</span></div>`;
   return appPage({
     script: o.nonce ? `<script nonce="${escapeHtml(o.nonce)}">${REDUTOR}</script>` : "",
     row: o.row,
@@ -1085,6 +1097,9 @@ function renderBarbearia(o: {
       (o.ok ? `<p class="empty" style="border-color:var(--p)">Salvo.</p>` : "") +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
       avisoContato +
+      // Fora do formulário de propósito: form dentro de form é HTML inválido, o navegador
+      // ignora o interno e fecha o externo — foi o que deixou o Salvar sem ação.
+      blocoLogo +
       `<form method="post" action="/painel/barbearia"><h2>Identidade</h2>` +
       `<p class="d" style="color:var(--muted);font-size:.72rem;margin:0 0 .4rem">Campo deixado em branco não altera o que já está gravado.</p><div class="card">` +
       campo("nome", "Nome da barbearia", String(o.row.display_name ?? o.nome), "text", "required maxlength=80") +
@@ -1094,17 +1109,6 @@ function renderBarbearia(o: {
       campo("telefone", "Telefone", String(o.row.phone_public ?? ""), "tel", "maxlength=20") +
       campo("whatsapp", "WhatsApp (só números, com 55)", String(o.row.whatsapp_public ?? ""), "tel", "maxlength=20") +
       campo("instagram", "Instagram (sem @)", String(o.row.instagram_handle ?? ""), "text", "maxlength=40") +
-      (String(o.row.logo_url ?? "").startsWith("https://")
-        ? `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo atual</span><div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">` +
-          `<img src="${escapeHtml(String(o.row.logo_url))}" alt="" style="width:2.6rem;height:2.6rem;border-radius:.6rem;object-fit:cover;background:var(--surface2)">` +
-          `<form method="post" action="/painel/logo"><input type="hidden" name="remover" value="1"><button type="submit" class="ghost" style="padding:.3rem .6rem;font-size:.72rem;cursor:pointer">Remover logo</button></form>` +
-          `</div></div>`
-        : "") +
-      `<div class="card" style="margin:0 0 .5rem"><span class="d">Logo da barbearia (quadrado, até 2 MB)</span>` +
-      `<form method="post" action="/painel/logo" enctype="multipart/form-data" data-redimensionar="512" style="margin-top:.4rem">` +
-      `<input name="arquivo" type="file" accept="image/jpeg,image/png,image/webp" style="width:100%;font-size:.78rem;color:var(--muted)">` +
-      `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.78rem;cursor:pointer;margin:.35rem 0 0">Enviar logo</button></form>` +
-      `<span class="d" style="display:block;margin-top:.35rem">Aparece no topo do site do cliente. Sem logo, fica as iniciais.</span></div>` +
       campo("logo", "Ou cole um link (https)", String(o.row.logo_url ?? ""), "url", "maxlength=300") +
       campo("politica", "Aviso no agendamento", String(o.row.booking_policy_text ?? ""), "text", "maxlength=200") +
       `</div><h2>Cores</h2><div class="card">` +
