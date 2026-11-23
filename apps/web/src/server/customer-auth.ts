@@ -339,7 +339,28 @@ export type PainelAgendamento = {
   customer_id: string | null;
   bbt_cents: number;
   bbt_usado_cents: number;
+  auto_completed_at: string | null;
 };
+
+// Fechamento automático: passou do horário de término, o atendimento vira 'completed'.
+// O cron da VPS roda a cada 5 minutos; esta chamada é a rede de segurança para quem abre
+// o painel antes disso — e é o que faz o número aparecer na hora certa.
+export type FechamentoVencidos = { fechados: number; cashback_cents: number };
+
+// Cliente que não veio: desfaz o fechamento automático e estorna o BBT.
+export async function marcarFalta(actorId: string, appointmentId: string): Promise<boolean> {
+  try {
+    await rpcServer<string>("marcar_falta", { p_actor: actorId, p_appointment: appointmentId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function fecharVencidos(tenantId: string): Promise<FechamentoVencidos> {
+  const linhas = await rpcServer<FechamentoVencidos>("fechar_atendimentos_vencidos", { p_tenant: tenantId }).catch(() => []);
+  return linhas[0] ?? { fechados: 0, cashback_cents: 0 };
+}
 
 export async function panelAgenda(
   tenantId: string,

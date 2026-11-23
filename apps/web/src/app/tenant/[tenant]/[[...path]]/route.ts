@@ -12,6 +12,7 @@ import {
   confirmAppointment,
   convidarMembro,
   creditCashback,
+  fecharVencidos,
   customerAppointments,
   customerCashback,
   customerMe,
@@ -19,6 +20,7 @@ import {
   idempotencyKeyFor,
   listMembers,
   loginStaff,
+  marcarFalta,
   panelAgenda,
   abandonarCliente,
   addExpense,
@@ -1555,6 +1557,7 @@ function renderPainel(o: {
     customer_id: string | null;
     bbt_cents: number;
     bbt_usado_cents: number;
+    auto_completed_at: string | null;
   }>;
   staff: Array<{ staff_id: string; display_name: string }>;
   servicos: Array<{ service_id: string; name: string; duration_min: number; price_cents: number }>;
@@ -1610,7 +1613,15 @@ function renderPainel(o: {
   const lista = o.agenda.length
     ? o.agenda
         .map((a) => {
-          const acoes = (ACAO_STATUS[a.status] ?? [])
+          const acoesAuto =
+            a.status === "completed" && a.auto_completed_at
+              ? `<form method="post" action="/painel/status" style="display:inline">` +
+                `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+                `<input type="hidden" name="status" value="no_show">` +
+                `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+                `<button type="submit" class="ghost" style="display:inline-block;margin:.35rem .35rem 0 0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">Não veio (estornar BBT)</button></form>`
+              : "";
+          const acoes = acoesAuto + (ACAO_STATUS[a.status] ?? [])
             .map(
               (acao) =>
                 `<form method="post" action="/painel/status" style="display:inline">` +
@@ -1652,7 +1663,7 @@ function renderPainel(o: {
             `<div class="card"><div class="row"><span class="t">${escapeHtml(fmtTime(a.starts_at, o.timezone))} · ${escapeHtml(a.customer_name ?? "Cliente")}</span>` +
             `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
             `<span class="d">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
-            `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
+            `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${a.auto_completed_at ? ` · fechado automaticamente às ${escapeHtml(fmtTime(a.auto_completed_at, o.timezone))}` : ""}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
             `${dinheiro}${acoes}` +
             (a.status === "confirmed" || a.status === "hold" || a.status === "pending_payment"
               ? `<details style="margin-top:.4rem"><summary class="d" style="cursor:pointer">Remarcar</summary>` +
@@ -2496,7 +2507,12 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
     const alvo = texto("status");
     const agendamento = texto("agendamento");
-    const resultado = await setAppointmentStatus(userId, agendamento, alvo);
+    // "Faltou" em atendimento fechado automaticamente é correção: precisa estornar o BBT.
+    // Nos demais estados, é a transição normal (confirmed -> no_show).
+    const corrigido = alvo === "no_show" ? await marcarFalta(userId, agendamento) : false;
+    const resultado = corrigido
+      ? { ok: true as const }
+      : await setAppointmentStatus(userId, agendamento, alvo);
     // Cashback nasce do atendimento concluído, nunca de reserva cancelada ou falta.
     let credito = 0;
     if (resultado.ok && alvo === "completed") credito = await creditCashback(agendamento);
@@ -2724,6 +2740,9 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
       const dia = /^\d{4}-\d{2}-\d{2}$/.test(diaBruto) ? diaBruto : todayIn(timezone);
       const { from, to } = janelaDoDia(dia, timezone);
       const filtro = (busca.get("staff") ?? "").trim();
+      // Rede de segurança do cron: quem abre a agenda antes dos 5 minutos vê o fechamento
+      // na hora, em vez de um monte de atendimento vencido ainda "confirmado".
+      await fecharVencidos(tenant.id);
       const [resumo, agenda, staffLista, servicos, bloqueios] = await Promise.all([
         panelResumo(tenant.id, from, to),
         panelAgenda(tenant.id, from, to, filtro || null),
