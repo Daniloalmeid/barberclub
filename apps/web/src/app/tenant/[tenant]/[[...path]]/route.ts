@@ -279,7 +279,7 @@ function appCss(t: ReturnType<typeof themeOf>): string {
 .wrap{width:100%;max-width:34rem;margin:0 auto;padding:0 1rem}
 header{position:sticky;top:0;z-index:10;background:${t.bg}f2;border-bottom:2px solid var(--p);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 header .wrap{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem}
-.logo{width:2.25rem;height:2.25rem;border-radius:.65rem;object-fit:contain;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;border:1px solid var(--line)}
+.logo{width:2.625rem;height:2.625rem;border-radius:.7rem;object-fit:contain;background:var(--surface2);color:var(--p);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.95rem;border:1px solid var(--line)}
 header .name{font-weight:650;letter-spacing:-.01em;font-size:.98rem}
 header .city{font-size:.72rem;color:var(--muted)}
 main{padding:1.1rem 0 2rem}
