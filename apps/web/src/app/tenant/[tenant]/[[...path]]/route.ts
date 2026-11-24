@@ -1003,6 +1003,7 @@ function renderFinanceiro(o: {
   semana: number;
   mes: number;
   atual: { recebido_cents: number; pagamentos: number; ticket_medio_cents: number; pix_cents: number; dinheiro_cents: number; cartao_cents: number; outros_cents: number; concluidos_cents: number; sem_pagamento: number; meta_cents: number; a_receber_cents: number; pago_antes_cents: number };
+  pendencias: Array<{ appointment_id: string; hora: string; cliente: string; servico: string; valor_cents: number; bbt_cents: number }>;
   erro?: string;
 }): string {
   const meta = Number(o.atual.meta_cents) || 0;
@@ -1044,6 +1045,24 @@ function renderFinanceiro(o: {
       linha("Últimos 7 dias", money(o.semana)) +
       linha("Este mês", money(o.mes)) +
       `</div>` +
+      `<h2>A receber hoje</h2>` +
+      (o.pendencias.length === 0
+        ? `<p class="empty">Nada em aberto neste dia. Todo atendimento tem pagamento registrado.</p>`
+        : o.pendencias
+            .map(
+              (pend) =>
+                `<div class="card" style="margin-bottom:.5rem"><div class="row"><span class="t">${escapeHtml(pend.hora)} · ${escapeHtml(pend.cliente)}</span>` +
+                `<span class="price">${escapeHtml(money(pend.valor_cents))}</span></div>` +
+                `<span class="d">${escapeHtml(pend.servico)}</span>` +
+                `<form method="post" action="/painel/receber" style="display:flex;gap:.4rem;margin-top:.4rem">` +
+                `<input type="hidden" name="agendamento" value="${escapeHtml(pend.appointment_id)}">` +
+                `<input type="hidden" name="dia" value="${escapeHtml(o.hoje)}">` +
+                `<select name="meio" aria-label="Forma de pagamento" style="flex:1;padding:.45rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.76rem">` +
+                `<option value="pix">Pix</option><option value="dinheiro">Dinheiro</option><option value="cartao">Cartão</option><option value="outro">Outro</option></select>` +
+                `<button type="submit" class="ghost" style="margin:0;padding:.45rem .8rem;font-size:.76rem;cursor:pointer">Receber ${escapeHtml(money(pend.valor_cents))}</button></form></div>`,
+            )
+            .join("") +
+      `<a class="ghost" href="/painel/agenda?dia=${encodeURIComponent(o.hoje)}" style="margin-top:.3rem">Ver a agenda do dia</a>`) +
       `<h2>Pendências</h2><div class="hours">` +
       linha("Concluídos sem pagamento registrado", String(Number(o.atual.sem_pagamento) || 0)) +
       `</div>` +
@@ -2899,6 +2918,23 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
         panelFinanceiro(tenant.id, userId, semana.from, semana.to),
         panelFinanceiro(tenant.id, userId, mes.from, mes.to),
       ]);
+      // A pendência precisa aparecer com botão: "4 sem pagamento" é informação, não ação.
+      const agendaHoje = await panelAgenda(tenant.id, dia.from, dia.to);
+      const pendencias = agendaHoje
+        .filter(
+          (a) =>
+            (a.status === "completed" || a.status === "confirmed") &&
+            Number(a.pago_cents) === 0 &&
+            !(Number(a.bbt_usado_cents) > 0 && a.price_cents !== null && Number(a.bbt_usado_cents) >= Number(a.price_cents)),
+        )
+        .map((a) => ({
+          appointment_id: a.appointment_id,
+          hora: fmtTime(a.starts_at, timezone),
+          cliente: a.customer_name ?? "Cliente",
+          servico: a.service_name ?? "Atendimento",
+          valor_cents: Number(a.price_cents) || 0,
+          bbt_cents: Number(a.bbt_cents) || 0,
+        }));
       const erro = new URL(request.url).searchParams.get("erro") ? "Não foi possível salvar a meta." : undefined;
       return html(
         renderFinanceiro({
@@ -2912,6 +2948,7 @@ export async function GET(request: Request, context: { params: Promise<{ tenant:
           semana: Number(semanaSoma.recebido_cents) || 0,
           mes: Number(mesSoma.recebido_cents) || 0,
           atual,
+          pendencias,
           erro,
         }),
       );
