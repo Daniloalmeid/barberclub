@@ -863,7 +863,7 @@ function renderVisaoGeral(o: {
   timezone: string;
   papel: string;
   dia: string;
-  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number };
+  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number; a_receber_cents: number; pago_antes_cents: number };
   agenda: Array<{
     appointment_id: string;
     starts_at: string;
@@ -906,7 +906,11 @@ function renderVisaoGeral(o: {
       `<div class="r"><span>Agendamentos hoje</span><span><strong>${Number(o.resumo.total) || 0}</strong></span></div>` +
       `<div class="r"><span>Confirmados</span><span>${Number(o.resumo.confirmados) || 0}</span></div>` +
       `<div class="r"><span>Concluídos</span><span>${Number(o.resumo.concluidos) || 0}</span></div>` +
-      `<div class="r"><span>Previsto em caixa</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+      `<div class="r"><span>A receber hoje</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.a_receber_cents))}</span></div>` +
+      `<div class="r"><span>Preço de tabela hoje</span><span>${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+      (Number(o.resumo.pago_antes_cents) > 0
+        ? `<div class="r"><span>Já recebido antes (serviços de hoje)</span><span>${escapeHtml(money(o.resumo.pago_antes_cents))}</span></div>`
+        : "") +
       `</div>` +
       (proximos ? `<h2>Próximos de hoje</h2><div class="hours">${proximos}</div>` : "") +
       `<h2>Módulos</h2>` +
@@ -998,7 +1002,7 @@ function renderFinanceiro(o: {
   dia: number;
   semana: number;
   mes: number;
-  atual: { recebido_cents: number; pagamentos: number; ticket_medio_cents: number; pix_cents: number; dinheiro_cents: number; cartao_cents: number; outros_cents: number; concluidos_cents: number; sem_pagamento: number; meta_cents: number };
+  atual: { recebido_cents: number; pagamentos: number; ticket_medio_cents: number; pix_cents: number; dinheiro_cents: number; cartao_cents: number; outros_cents: number; concluidos_cents: number; sem_pagamento: number; meta_cents: number; a_receber_cents: number; pago_antes_cents: number };
   erro?: string;
 }): string {
   const meta = Number(o.atual.meta_cents) || 0;
@@ -1018,10 +1022,12 @@ function renderFinanceiro(o: {
     description: `Entradas da ${o.nome}.`,
     shell: "painel" as const,
     body:
-      `<h1>Caixa</h1><p class="sub">Somente dinheiro recebido — faturamento previsto é outra coisa</p>` +
+      `<h1>Caixa</h1><p class="sub">Recebido é o dinheiro que entrou. A receber é atendimento do dia sem pagamento registrado.</p>` +
       (o.erro ? `<p class="empty">${escapeHtml(o.erro)}</p>` : "") +
       `<h2>Hoje</h2><div class="hours">` +
       linha("Recebido hoje", money(recebido)) +
+      linha("A receber hoje", money(o.atual.a_receber_cents)) +
+      (Number(o.atual.pago_antes_cents) > 0 ? linha("Já recebido antes (serviços de hoje)", money(o.atual.pago_antes_cents)) : "") +
       linha("Atendimentos pagos", String(Number(o.atual.pagamentos) || 0)) +
       linha("Ticket médio", money(o.atual.ticket_medio_cents)) +
       `</div><div class="card" style="margin-top:.6rem">${barra}</div>` +
@@ -1542,7 +1548,7 @@ function renderPainel(o: {
   timezone: string;
   papel: string;
   dia: string;
-  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number };
+  resumo: { total: number; confirmados: number; concluidos: number; cancelados: number; faturamento_cents: number; a_receber_cents: number; pago_antes_cents: number };
   agenda: Array<{
     appointment_id: string;
     starts_at: string;
@@ -1576,7 +1582,11 @@ function renderPainel(o: {
     `<div class="r"><span>Confirmados</span><span>${numero(o.resumo.confirmados)}</span></div>` +
     `<div class="r"><span>Concluídos</span><span>${numero(o.resumo.concluidos)}</span></div>` +
     `<div class="r"><span>Cancelados / faltas</span><span>${numero(o.resumo.cancelados)}</span></div>` +
-    `<div class="r"><span>Previsto em caixa</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+    `<div class="r"><span>A receber hoje</span><span class="price" style="color:var(--p)">${escapeHtml(money(o.resumo.a_receber_cents))}</span></div>` +
+    `<div class="r"><span>Preço de tabela hoje</span><span>${escapeHtml(money(o.resumo.faturamento_cents))}</span></div>` +
+    (Number(o.resumo.pago_antes_cents) > 0
+      ? `<div class="r"><span>Já recebido antes (serviços de hoje)</span><span>${escapeHtml(money(o.resumo.pago_antes_cents))}</span></div>`
+      : "") +
     `</div>`;
 
   // Semana do dia escolhido, começando na segunda (semana brasileira) e indo até

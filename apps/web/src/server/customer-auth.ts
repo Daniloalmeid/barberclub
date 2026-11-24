@@ -382,11 +382,13 @@ export type PainelResumo = {
   concluidos: number;
   cancelados: number;
   faturamento_cents: number;
+  a_receber_cents: number;
+  pago_antes_cents: number;
 };
 
 export async function panelResumo(tenantId: string, from: string, to: string): Promise<PainelResumo> {
   const rows = await rpcServer<PainelResumo>("panel_resumo", { p_tenant: tenantId, p_from: from, p_to: to }).catch(() => []);
-  return rows[0] ?? { total: 0, confirmados: 0, concluidos: 0, cancelados: 0, faturamento_cents: 0 };
+  return rows[0] ?? { total: 0, confirmados: 0, concluidos: 0, cancelados: 0, faturamento_cents: 0, a_receber_cents: 0, pago_antes_cents: 0 };
 }
 
 // O ator vai junto: a função do banco confere o papel e, para staff, se o atendimento
@@ -595,6 +597,8 @@ export type Financeiro = {
   concluidos_cents: number;
   sem_pagamento: number;
   meta_cents: number;
+  a_receber_cents: number;
+  pago_antes_cents: number;
 };
 
 const FINANCEIRO_ZERO: Financeiro = {
@@ -608,6 +612,8 @@ const FINANCEIRO_ZERO: Financeiro = {
   concluidos_cents: 0,
   sem_pagamento: 0,
   meta_cents: 0,
+  a_receber_cents: 0,
+  pago_antes_cents: 0,
 };
 
 export async function panelFinanceiro(
