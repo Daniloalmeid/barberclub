@@ -1515,8 +1515,9 @@ const ACAO_STATUS: Record<string, Array<{ status: string; rotulo: string }>> = {
     { status: "confirmed", rotulo: "Confirmar" },
     { status: "canceled", rotulo: "Cancelar" },
   ],
+  // Concluir saiu daqui: agora e "Concluir e receber" ou "Concluir sem receber",
+  // com o meio de pagamento na mesma tela. Fechar sem perguntar era o buraco.
   confirmed: [
-    { status: "completed", rotulo: "Concluir" },
     { status: "no_show", rotulo: "Faltou" },
     { status: "canceled", rotulo: "Cancelar" },
   ],
@@ -1646,7 +1647,7 @@ function renderPainel(o: {
           const saldoBbt = Number(a.bbt_cents) || 0;
           const usadoBbt = Number(a.bbt_usado_cents) || 0;
           const recebivel =
-            (a.status === "confirmed" || a.status === "completed") &&
+            a.status === "completed" &&
             pago === 0 &&
             !(usadoBbt > 0 && a.price_cents !== null && usadoBbt >= Number(a.price_cents));
           // Teto do abatimento: o menor entre o saldo do cliente e o preço do serviço.
@@ -1654,6 +1655,24 @@ function renderPainel(o: {
           const bbtCampo = saldoBbt > 0 && recebivel
             ? `<label class="d" for="bbt_${a.appointment_id}">Usar BBT (saldo ${escapeHtml(bbt(saldoBbt))})</label>` +
               `<input id="bbt_${a.appointment_id}" name="bbt" inputmode="decimal" value="${(tetoBbt / 100).toFixed(2).replace(".", ",")}" style="width:100%;margin:.2rem 0 .3rem;padding:.45rem;border-radius:.6rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.78rem">`
+            : "";
+          const valorCobrado = a.price_cents ? Math.max(0, Number(a.price_cents) - tetoBbt) : 0;
+          const concluirBloco = a.status === "confirmed"
+            ? `<form method="post" action="/painel/concluir" style="margin-top:.45rem">` +
+              `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+              `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+              bbtCampo +
+              `<label class="d" for="meio_${a.appointment_id}">Como o cliente pagou</label>` +
+              `<div style="display:flex;gap:.4rem;margin:.2rem 0 .35rem">` +
+              `<select id="meio_${a.appointment_id}" name="meio" aria-label="Forma de pagamento" style="flex:1;padding:.5rem;border-radius:.65rem;border:1px solid var(--line);background:var(--surface2);color:var(--txt);font:inherit;font-size:.78rem">` +
+              `<option value="pix">Pix</option><option value="dinheiro">Dinheiro</option><option value="cartao">Cartão</option><option value="outro">Outro</option></select>` +
+              `<button type="submit" class="cta" style="margin:0;padding:.55rem .9rem;font-size:.8rem">Concluir e receber ${escapeHtml(money(valorCobrado))}</button>` +
+              `</div></form>` +
+              `<form method="post" action="/painel/concluir" style="margin-top:.25rem">` +
+              `<input type="hidden" name="agendamento" value="${escapeHtml(a.appointment_id)}">` +
+              `<input type="hidden" name="dia" value="${escapeHtml(o.dia)}">` +
+              `<input type="hidden" name="meio" value="depois">` +
+              `<button type="submit" class="ghost" style="width:100%;padding:.4rem;font-size:.74rem;cursor:pointer;margin:0">Concluir sem receber (cobrar depois)</button></form>`
             : "";
           const dinheiro = pago > 0
             ? `<span class="d" style="color:var(--p)">recebido ${escapeHtml(money(pago))}${a.metodo ? ` · ${escapeHtml(a.metodo)}` : ""}${usadoBbt > 0 ? ` · ${escapeHtml(bbt(usadoBbt))}` : ""}</span>`
@@ -1674,7 +1693,7 @@ function renderPainel(o: {
             `<span class="price">${a.price_cents ? escapeHtml(money(a.price_cents)) : ""}</span></div>` +
             `<span class="d">${escapeHtml(a.service_name ?? "Atendimento")}${a.staff_name ? ` · ${escapeHtml(a.staff_name)}` : ""}</span>` +
             `<span class="d">${escapeHtml(ROTULO_STATUS[a.status] ?? a.status)}${a.auto_completed_at ? ` · fechado automaticamente às ${escapeHtml(fmtTime(a.auto_completed_at, o.timezone))}` : ""}${zap ? ` · <a href="https://wa.me/55${escapeHtml(zap)}" target="_blank" rel="noopener noreferrer" style="color:var(--p)">${escapeHtml(a.customer_phone ?? "")}</a>` : ""}</span>` +
-            `${dinheiro}${acoes}` +
+            `${dinheiro}${concluirBloco}${acoes}` +
             (a.status === "confirmed" || a.status === "hold" || a.status === "pending_payment"
               ? `<details style="margin-top:.4rem"><summary class="d" style="cursor:pointer">Remarcar</summary>` +
                 `<form method="post" action="/painel/remarcar" style="display:flex;gap:.35rem;margin-top:.35rem">` +
@@ -2507,6 +2526,47 @@ export async function POST(request: Request, context: { params: Promise<{ tenant
     const headers = new Headers({ location: "/painel" });
     for (const item of sessionHeaders(login.session)) headers.append("set-cookie", item);
     return new Response(null, { status: 303, headers });
+  }
+
+  if (path?.[0] === "painel" && path[1] === "concluir" && path.length === 2) {
+    const { accessToken, userId } = readSession(request);
+    if (!accessToken || !userId) {
+      return new Response(null, { status: 303, headers: new Headers({ location: "/painel/entrar" }) });
+    }
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(texto("dia")) ? texto("dia") : todayIn(timezone);
+    const agendamento = texto("agendamento");
+    const meio = texto("meio");
+    const voltar = (erro?: string) =>
+      new Response(null, {
+        status: 303,
+        headers: new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}${erro ? `&erro=${erro}` : "&ok=1"}` }),
+      });
+
+    // Concluir primeiro: o BBT do atendimento nasce da conclusão, e o pagamento só faz
+    // sentido depois que o atendimento existe como concluído.
+    const status = await setAppointmentStatus(userId, agendamento, "completed");
+    if (!status.ok) return voltar("concluir");
+    const credito = await creditCashback(agendamento);
+
+    if (meio === "depois" || meio === "") {
+      const headers = new Headers({ location: `/painel/agenda?dia=${encodeURIComponent(dia)}&ok=1` });
+      if (credito > 0) headers.set("x-cashback-creditado", String(credito));
+      return new Response(null, { status: 303, headers });
+    }
+
+    // BBT antes do pagamento: se o resgate falhar, não entra dinheiro pela metade.
+    const bbtCents = valorEmCentavos(texto("bbt")) ?? 0;
+    if (bbtCents > 0) {
+      const tenant = await tenantBySlug(slug);
+      const okBbt = tenant ? await debitCashback(userId, tenant.id, agendamento, bbtCents, "BBT usado no atendimento") : false;
+      if (!okBbt) return voltar("bbt");
+    }
+    const pago = await recordPayment(userId, agendamento, meio, undefined, bbtCents);
+    // recordPayment devolve nulo em dois casos diferentes: erro e pagamento 100% em BBT
+    // (quando o dinheiro que entra é zero, o banco não cria linha falsa). Só é falha
+    // quando não havia BBT nenhum e ainda assim nada foi registrado.
+    if (!pago && bbtCents === 0) return voltar("pagamento");
+    return voltar();
   }
 
   if (path?.[0] === "painel" && path[1] === "status" && path.length === 2) {
